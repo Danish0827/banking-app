@@ -1,10 +1,8 @@
-import bcrypt from "bcrypt";
 import type pg from "pg";
+import { BCRYPT_ROUNDS, hashPassword } from "../../lib/password.js";
 import { pool } from "../pool.js";
 import { withTransaction } from "../transaction.js";
 import { DEMO_PASSWORD, SEED_CUSTOMERS, type SeedAccount, type SeedCustomer } from "./seedData.js";
-
-const DEFAULT_BCRYPT_ROUNDS = 12;
 
 export interface SeedOptions {
   db?: pg.Pool;
@@ -27,11 +25,11 @@ export interface SeedResult {
  */
 export async function seedDatabase({
   db = pool,
-  bcryptRounds = DEFAULT_BCRYPT_ROUNDS,
+  bcryptRounds = BCRYPT_ROUNDS,
 }: SeedOptions = {}): Promise<SeedResult> {
   // Hashing is slow by design, so do it before opening the transaction.
   const passwordHashes = await Promise.all(
-    SEED_CUSTOMERS.map(() => bcrypt.hash(DEMO_PASSWORD, bcryptRounds)),
+    SEED_CUSTOMERS.map(() => hashPassword(DEMO_PASSWORD, bcryptRounds)),
   );
 
   return withTransaction(async (client) => {

@@ -4,6 +4,9 @@ import { databaseNameFromUrl, isTestDatabaseName } from "./databaseName.js";
 
 const postgresUrl = z.url({ protocol: /^postgres(ql)?$/ });
 
+/** The value shipped in .env.example. Fine for local use, refused in production. */
+const EXAMPLE_SESSION_SECRET = "local-development-only-secret-change-me";
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -14,8 +17,26 @@ const envSchema = z
     DATABASE_URL: postgresUrl.optional(),
     TEST_DATABASE_URL: postgresUrl.optional(),
     DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+    // Signs session tokens. Required in every environment; there is no default.
+    SESSION_SECRET: z
+      .string({ error: "Required" })
+      .min(32, { error: "Must be at least 32 characters" }),
+    SESSION_TTL_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(24 * 60)
+      .default(60),
   })
   .superRefine((value, ctx) => {
+    if (value.NODE_ENV === "production" && value.SESSION_SECRET === EXAMPLE_SESSION_SECRET) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["SESSION_SECRET"],
+        message: "Must not be the placeholder from .env.example in production",
+      });
+    }
+
     if (value.NODE_ENV !== "test") {
       if (!value.DATABASE_URL) {
         ctx.addIssue({ code: "custom", path: ["DATABASE_URL"], message: "Required" });
@@ -51,6 +72,8 @@ export interface Env {
    */
   DATABASE_URL: string;
   DB_POOL_MAX: number;
+  SESSION_SECRET: string;
+  SESSION_TTL_SECONDS: number;
 }
 
 function loadEnv(): Env {
@@ -61,11 +84,19 @@ function loadEnv(): Env {
     process.exit(1);
   }
 
-  const { NODE_ENV, PORT, LOG_LEVEL, DB_POOL_MAX, DATABASE_URL, TEST_DATABASE_URL } = parsed.data;
+  const { NODE_ENV, DATABASE_URL, TEST_DATABASE_URL } = parsed.data;
   const databaseUrl = NODE_ENV === "test" ? TEST_DATABASE_URL : DATABASE_URL;
 
-  // The schema refinement above guarantees the active URL is present.
-  return { NODE_ENV, PORT, LOG_LEVEL, DB_POOL_MAX, DATABASE_URL: databaseUrl as string };
+  return {
+    NODE_ENV,
+    PORT: parsed.data.PORT,
+    LOG_LEVEL: parsed.data.LOG_LEVEL,
+    // The schema refinement above guarantees the active URL is present.
+    DATABASE_URL: databaseUrl as string,
+    DB_POOL_MAX: parsed.data.DB_POOL_MAX,
+    SESSION_SECRET: parsed.data.SESSION_SECRET,
+    SESSION_TTL_SECONDS: parsed.data.SESSION_TTL_MINUTES * 60,
+  };
 }
 
 export const env = loadEnv();

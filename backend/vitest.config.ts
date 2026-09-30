@@ -12,6 +12,8 @@ export default defineConfig({
       // NODE_ENV=test makes the app use TEST_DATABASE_URL (see src/config/env.ts).
       NODE_ENV: "test",
       LOG_LEVEL: "silent",
+      // Test-only signing key; never used outside the test run.
+      SESSION_SECRET: "test-only-session-secret-0123456789abcdef",
     },
   },
 });

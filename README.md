@@ -3,9 +3,9 @@
 A simple banking web application: view accounts, deposit, withdraw, transfer between customers
 and browse transaction history.
 
-> **Status:** project and database foundation. The tooling, both applications, the health endpoint,
-> the database schema, migrations and seed data are in place; authentication and the banking
-> features are added in later milestones.
+> **Status:** foundation, database and authentication. Customers can sign in and out; the schema,
+> migrations and seed data are in place. Accounts, deposits, withdrawals, transfers and transaction
+> history are added in later milestones.
 
 ## Tech stack
 
@@ -29,8 +29,10 @@ banking-app/
 │   ├── src/
 │   │   ├── config/           Environment parsing, logger
 │   │   ├── db/               Pool, transaction helper, migration runner, seed
-│   │   ├── middleware/       Request logging, 404 and error handlers
-│   │   ├── modules/          Feature modules (currently: health)
+│   │   ├── errors/           Application error classes
+│   │   ├── lib/              Shared helpers (password hashing)
+│   │   ├── middleware/       Request logging, validation, auth, 404 and error handlers
+│   │   ├── modules/          Feature modules: auth, customers, health
 │   │   ├── routes/           Versioned API routers
 │   │   ├── app.ts            Express app factory (no port binding; used by tests)
 │   │   └── server.ts         Process entry point
@@ -41,8 +43,9 @@ banking-app/
 │       └── setup/            Test-run setup (migrations, pool teardown)
 └── frontend/                 Next.js application
     └── src/
-        ├── app/              Routes and layouts
-        └── components/
+        ├── app/              Routes and layouts (home, login)
+        ├── components/
+        └── lib/              API client and auth calls
 ```
 
 ## Prerequisites
@@ -104,8 +107,8 @@ Run these from the `banking-app/` directory.
    npm run dev:frontend
    ```
 
-The home page shows an "API status" indicator, which calls the health endpoint through the
-frontend proxy and confirms the two applications are wired together.
+Open http://localhost:3000 and sign in with one of the demo customers below. The home page also
+shows an "API status" indicator, which calls the health endpoint through the frontend proxy.
 
 ### Demo data
 
@@ -125,17 +128,27 @@ only as bcrypt hashes, and each opening balance is recorded as a deposit in the 
 
 ### Backend (`backend/.env`)
 
-| Variable            | Default       | Description                                                      |
-| ------------------- | ------------- | ---------------------------------------------------------------- |
-| `NODE_ENV`          | `development` | `development`, `test` or `production`                            |
-| `PORT`              | `4000`        | Port the API listens on                                          |
-| `LOG_LEVEL`         | `info`        | Pino log level                                                   |
-| `DATABASE_URL`      | _(required)_  | Development/production PostgreSQL connection string              |
-| `TEST_DATABASE_URL` | _(tests)_     | Test database; required for `npm test`, name must end in `_test` |
-| `DB_POOL_MAX`       | `10`          | Maximum connections in the pool                                  |
+| Variable              | Default       | Description                                                      |
+| --------------------- | ------------- | ---------------------------------------------------------------- |
+| `NODE_ENV`            | `development` | `development`, `test` or `production`                            |
+| `PORT`                | `4000`        | Port the API listens on                                          |
+| `LOG_LEVEL`           | `info`        | Pino log level                                                   |
+| `DATABASE_URL`        | _(required)_  | Development/production PostgreSQL connection string              |
+| `TEST_DATABASE_URL`   | _(tests)_     | Test database; required for `npm test`, name must end in `_test` |
+| `DB_POOL_MAX`         | `10`          | Maximum connections in the pool                                  |
+| `SESSION_SECRET`      | _(required)_  | Key that signs session tokens; at least 32 characters            |
+| `SESSION_TTL_MINUTES` | `60`          | How long a login session lasts                                   |
 
 The environment is validated at startup; the process exits with a clear message if a variable is
 missing or malformed.
+
+`SESSION_SECRET` has no default in code. `.env.example` ships a placeholder so local setup works
+without extra steps, and the API refuses to start with that placeholder when `NODE_ENV=production`.
+Generate a real secret with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
 
 ### Frontend (`frontend/.env.local`)
 
@@ -216,11 +229,56 @@ set `POSTGRES_PORT` when starting Compose and update the connection strings to m
 ## API
 
 Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and errors as
-`{ "error": { "code", "message", "requestId" } }`. Every response carries an `X-Request-Id` header.
+`{ "error": { "code", "message", "details?", "requestId" } }`. Every response carries an
+`X-Request-Id` header and `Cache-Control: no-store`.
 
-| Method | Path      | Description    | Response                             |
-| ------ | --------- | -------------- | ------------------------------------ |
-| GET    | `/health` | Liveness check | `200 { "data": { "status": "ok" } }` |
+| Method | Path           | Auth    | Request body          | Success response                                  |
+| ------ | -------------- | ------- | --------------------- | ------------------------------------------------- |
+| GET    | `/health`      | none    | none                  | `200 { "data": { "status": "ok" } }`              |
+| POST   | `/auth/login`  | none    | `{ email, password }` | `200 { "data": { "customer" } }` + session cookie |
+| POST   | `/auth/logout` | none    | none                  | `204`, clears the session cookie                  |
+| GET    | `/auth/me`     | session | none                  | `200 { "data": { "customer" } }`                  |
+
+`customer` is `{ id, email, fullName }`.
+
+| Error code            | Status | Meaning                                                      |
+| --------------------- | ------ | ------------------------------------------------------------ |
+| `VALIDATION_ERROR`    | 400    | Invalid input; `details` lists `{ path, message }` per field |
+| `INVALID_JSON`        | 400    | The request body is not valid JSON                           |
+| `INVALID_CREDENTIALS` | 401    | Login failed (unknown email or wrong password)               |
+| `UNAUTHENTICATED`     | 401    | Missing, invalid or expired session                          |
+| `NOT_FOUND`           | 404    | Unknown route                                                |
+| `PAYLOAD_TOO_LARGE`   | 413    | Request body over 10kb                                       |
+| `RATE_LIMITED`        | 429    | Too many failed logins; `details.retryAfterSeconds`          |
+| `INTERNAL_ERROR`      | 500    | Unexpected error; details are logged, not returned           |
+
+## Authentication
+
+- **Login** checks the password with bcrypt and answers an unknown email and a wrong password with
+  the same `401 INVALID_CREDENTIALS`. An unknown email is still checked against a decoy hash, so
+  response time does not reveal which emails are registered.
+- **Session** is a JWT (HS256) holding only the customer id and expiry, stored in a cookie that is
+  `HttpOnly` (unreadable from JavaScript), `SameSite=Lax` (not sent on cross-site POSTs) and
+  `Secure` in production. It expires after `SESSION_TTL_MINUTES`.
+- **`requireAuth`** verifies the cookie and exposes the caller as `req.auth` (`AuthContext`), which
+  services use for ownership checks. Anything else gets `401 UNAUTHENTICATED`.
+- **Logout** clears the cookie. Sessions are stateless, so a copied token stays valid until it
+  expires; see "Production improvements" for server-side revocation.
+- **Rate limiting** allows 5 failed logins per account (email) per 15 minutes. It is keyed on the
+  email rather than the client IP because every request arrives through the Next.js proxy and so
+  shares one source address; an IP-keyed limit would treat all customers as one client. The
+  trade-off is that someone can temporarily lock a known email out by failing on purpose, and
+  guessing one password across many emails is not limited here.
+- **Logs** contain the method, path, status, duration, request id and customer id of each request.
+  Headers, cookies, query strings and bodies are never logged.
+- **`X-Request-Id`** from the client is reused only if it is 1–64 characters of letters, digits,
+  `.`, `_` or `-`; otherwise a new id is generated.
+
+### Production improvements
+
+- Server-side session store (or token denylist) so logout and password changes revoke sessions.
+- Rate limiting at the edge by client IP, with a shared store such as Redis across instances.
+- MFA, account lockout notifications and refresh-token rotation.
 
 ## Scripts
 
