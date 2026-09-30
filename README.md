@@ -3,9 +3,8 @@
 A simple banking web application: view accounts, deposit, withdraw, transfer between customers
 and browse transaction history.
 
-> **Status:** foundation, database and authentication. Customers can sign in and out; the schema,
-> migrations and seed data are in place. Accounts, deposits, withdrawals, transfers and transaction
-> history are added in later milestones.
+> **Status:** customers can sign in and view their own accounts. Deposits, withdrawals, transfers
+> and transaction history are added in later milestones.
 
 ## Tech stack
 
@@ -32,7 +31,7 @@ banking-app/
 │   │   ├── errors/           Application error classes
 │   │   ├── lib/              Shared helpers (password hashing)
 │   │   ├── middleware/       Request logging, validation, auth, 404 and error handlers
-│   │   ├── modules/          Feature modules: auth, customers, health
+│   │   ├── modules/          Feature modules: accounts, auth, customers, health
 │   │   ├── routes/           Versioned API routers
 │   │   ├── app.ts            Express app factory (no port binding; used by tests)
 │   │   └── server.ts         Process entry point
@@ -43,9 +42,9 @@ banking-app/
 │       └── setup/            Test-run setup (migrations, pool teardown)
 └── frontend/                 Next.js application
     └── src/
-        ├── app/              Routes and layouts (home, login)
+        ├── app/              Routes: login, and the signed-in pages under (app)/
         ├── components/
-        └── lib/              API client and auth calls
+        └── lib/              API client, auth and account calls, formatting
 ```
 
 ## Prerequisites
@@ -107,8 +106,8 @@ Run these from the `banking-app/` directory.
    npm run dev:frontend
    ```
 
-Open http://localhost:3000 and sign in with one of the demo customers below. The home page also
-shows an "API status" indicator, which calls the health endpoint through the frontend proxy.
+Open http://localhost:3000 and sign in with one of the demo customers below. The dashboard lists
+that customer's accounts; select one to see its details.
 
 ### Demo data
 
@@ -232,14 +231,18 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 `{ "error": { "code", "message", "details?", "requestId" } }`. Every response carries an
 `X-Request-Id` header and `Cache-Control: no-store`.
 
-| Method | Path           | Auth    | Request body          | Success response                                  |
-| ------ | -------------- | ------- | --------------------- | ------------------------------------------------- |
-| GET    | `/health`      | none    | none                  | `200 { "data": { "status": "ok" } }`              |
-| POST   | `/auth/login`  | none    | `{ email, password }` | `200 { "data": { "customer" } }` + session cookie |
-| POST   | `/auth/logout` | none    | none                  | `204`, clears the session cookie                  |
-| GET    | `/auth/me`     | session | none                  | `200 { "data": { "customer" } }`                  |
+| Method | Path                   | Auth    | Request body          | Success response                                  |
+| ------ | ---------------------- | ------- | --------------------- | ------------------------------------------------- |
+| GET    | `/health`              | none    | none                  | `200 { "data": { "status": "ok" } }`              |
+| POST   | `/auth/login`          | none    | `{ email, password }` | `200 { "data": { "customer" } }` + session cookie |
+| POST   | `/auth/logout`         | none    | none                  | `204`, clears the session cookie                  |
+| GET    | `/auth/me`             | session | none                  | `200 { "data": { "customer" } }`                  |
+| GET    | `/accounts`            | session | none                  | `200 { "data": { "accounts": [account] } }`       |
+| GET    | `/accounts/:accountId` | session | none                  | `200 { "data": { "account" } }`                   |
 
-`customer` is `{ id, email, fullName }`.
+- `customer` is `{ id, email, fullName }`.
+- `account` is `{ id, accountNumber, type, currency, balance, createdAt }`. `type` is `checking` or
+  `savings`, and `balance` is an integer number of minor units (cents): `250000` means $2,500.00.
 
 | Error code            | Status | Meaning                                                      |
 | --------------------- | ------ | ------------------------------------------------------------ |
@@ -247,6 +250,7 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 | `INVALID_JSON`        | 400    | The request body is not valid JSON                           |
 | `INVALID_CREDENTIALS` | 401    | Login failed (unknown email or wrong password)               |
 | `UNAUTHENTICATED`     | 401    | Missing, invalid or expired session                          |
+| `ACCOUNT_NOT_FOUND`   | 404    | No such account, or it belongs to another customer           |
 | `NOT_FOUND`           | 404    | Unknown route                                                |
 | `PAYLOAD_TOO_LARGE`   | 413    | Request body over 10kb                                       |
 | `RATE_LIMITED`        | 429    | Too many failed logins; `details.retryAfterSeconds`          |
@@ -273,6 +277,20 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
   Headers, cookies, query strings and bodies are never logged.
 - **`X-Request-Id`** from the client is reused only if it is 1–64 characters of letters, digits,
   `.`, `_` or `-`; otherwise a new id is generated.
+
+## Accounts
+
+- **Authentication.** Both account endpoints require a session and return `401 UNAUTHENTICATED`
+  without one.
+- **Ownership.** The customer is always taken from the session, never from the request. A
+  `customerId` sent in the query string or body is ignored.
+- **Enforced in the query.** An account is loaded with `WHERE id = $1 AND customer_id = $2`, so
+  there is no code path that fetches an account first and checks its owner afterwards.
+- **No enumeration.** An account that belongs to someone else and an account that does not exist
+  both return the same `404 ACCOUNT_NOT_FOUND`. A malformed id returns `400 VALIDATION_ERROR`.
+- **Listing** returns only the caller's accounts, ordered by account number.
+- **In the UI** account numbers are masked to the last four digits. The detail page can reveal the
+  customer's own full number on request.
 
 ### Production improvements
 

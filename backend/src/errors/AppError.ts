@@ -40,6 +40,16 @@ export class UnauthenticatedError extends AppError {
   }
 }
 
+/**
+ * The account does not exist, or it belongs to someone else. Both cases get
+ * the same response so a caller cannot probe for other customers' accounts.
+ */
+export class AccountNotFoundError extends AppError {
+  constructor() {
+    super(404, "ACCOUNT_NOT_FOUND", "Account not found");
+  }
+}
+
 export class RateLimitedError extends AppError {
   constructor(retryAfterSeconds: number) {
     super(429, "RATE_LIMITED", "Too many attempts. Please try again later.", {
