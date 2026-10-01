@@ -109,6 +109,13 @@ export class UnsupportedMediaTypeError extends AppError {
   }
 }
 
+/** The service cannot take traffic right now (dependency down, or shutting down). */
+export class ServiceUnavailableError extends AppError {
+  constructor(details: unknown) {
+    super(503, "SERVICE_UNAVAILABLE", "Service is not ready", details);
+  }
+}
+
 export class RateLimitedError extends AppError {
   constructor(retryAfterSeconds: number) {
     super(429, "RATE_LIMITED", "Too many attempts. Please try again later.", {

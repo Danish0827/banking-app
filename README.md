@@ -34,6 +34,8 @@ banking-app/
 │   │   ├── modules/          Feature modules: accounts, auth, customers, health, transactions
 │   │   ├── routes/           Versioned API routers
 │   │   ├── app.ts            Express app factory (no port binding; used by tests)
+│   │   ├── lifecycle.ts      Shutdown state read by the readiness check
+│   │   ├── shutdown.ts       Graceful shutdown on SIGTERM/SIGINT
 │   │   └── server.ts         Process entry point
 │   └── tests/
 │       ├── integration/      Tests that run against the test database
@@ -141,13 +143,19 @@ only as bcrypt hashes, and each opening balance is recorded as a deposit in the 
 | `DATABASE_URL`                | _(required)_  | Development/production PostgreSQL connection string              |
 | `TEST_DATABASE_URL`           | _(tests)_     | Test database; required for `npm test`, name must end in `_test` |
 | `DB_POOL_MAX`                 | `10`          | Maximum connections in the pool                                  |
+| `DB_CONNECTION_TIMEOUT_MS`    | `5000`        | Wait for a free pool connection before failing the request       |
+| `DB_IDLE_TIMEOUT_MS`          | `30000`       | Close pool connections unused for this long                      |
+| `DB_STATEMENT_TIMEOUT_MS`     | `10000`       | Limit for any statement, and for a transaction left idle         |
+| `SHUTDOWN_TIMEOUT_MS`         | `10000`       | Time in-flight requests get on SIGTERM/SIGINT before forced exit |
 | `SESSION_SECRET`              | _(required)_  | Key that signs session tokens; at least 32 characters            |
 | `SESSION_TTL_MINUTES`         | `60`          | How long a login session lasts                                   |
 | `CORS_ALLOWED_ORIGINS`        | _(empty)_     | Extra browser origins allowed to call the API with credentials   |
 | `MONEY_RATE_LIMIT_PER_MINUTE` | `30`          | Deposits, withdrawals and transfers per customer per minute      |
 
-The environment is validated at startup; the process exits with a clear message if a variable is
-missing or malformed.
+The environment is validated at startup; the process exits with a clear message (naming the
+variable, never echoing its value) if a variable is missing or malformed. With
+`NODE_ENV=production` it also refuses the `.env.example` session secret or an obviously simple
+one, and `CORS_ALLOWED_ORIGINS` entries that are not `https`.
 
 `SESSION_SECRET` has no default in code. `.env.example` ships a placeholder so local setup works
 without extra steps, and the API refuses to start with that placeholder when `NODE_ENV=production`.
@@ -162,6 +170,9 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 | Variable           | Default                 | Description                         |
 | ------------------ | ----------------------- | ----------------------------------- |
 | `API_PROXY_TARGET` | `http://localhost:4000` | Backend that `/api/*` is proxied to |
+
+`API_PROXY_TARGET` is checked when the web app builds or starts: it must be an absolute `http(s)`
+URL without credentials.
 
 ## Database
 
@@ -239,18 +250,19 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 `{ "error": { "code", "message", "details?", "requestId" } }`. Every response carries an
 `X-Request-Id` header and `Cache-Control: no-store`.
 
-| Method | Path                               | Auth                        | Request body                       | Success response                                                     |
-| ------ | ---------------------------------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------- |
-| GET    | `/health`                          | none                        | none                               | `200 { "data": { "status": "ok" } }`                                 |
-| POST   | `/auth/login`                      | none                        | `{ email, password }`              | `200 { "data": { "customer" } }` + session cookie                    |
-| POST   | `/auth/logout`                     | none                        | none                               | `204`, clears the session cookie                                     |
-| GET    | `/auth/me`                         | session                     | none                               | `200 { "data": { "customer" } }`                                     |
-| GET    | `/accounts`                        | session                     | none                               | `200 { "data": { "accounts": [account] } }`                          |
-| GET    | `/accounts/:accountId`             | session                     | none                               | `200 { "data": { "account" } }`                                      |
-| POST   | `/accounts/:accountId/deposits`    | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                       |
-| POST   | `/accounts/:accountId/withdrawals` | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                       |
-| POST   | `/accounts/:accountId/transfers`   | session + `Idempotency-Key` | `{ destinationAccountId, amount }` | `201 { "data": { "transaction", "account", "destinationAccount" } }` |
-| GET    | `/transactions`                    | session                     | none (query parameters)            | `200 { "data": { "transactions": [item], "nextCursor" } }`           |
+| Method | Path                               | Auth                        | Request body                       | Success response                                                                 |
+| ------ | ---------------------------------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------- |
+| GET    | `/health`                          | none                        | none                               | `200 { "data": { "status": "ok" } }`                                             |
+| GET    | `/health/ready`                    | none                        | none                               | `200 { "data": { "status": "ready", "checks": { "database": "ok" } } }` or `503` |
+| POST   | `/auth/login`                      | none                        | `{ email, password }`              | `200 { "data": { "customer" } }` + session cookie                                |
+| POST   | `/auth/logout`                     | none                        | none                               | `204`, clears the session cookie                                                 |
+| GET    | `/auth/me`                         | session                     | none                               | `200 { "data": { "customer" } }`                                                 |
+| GET    | `/accounts`                        | session                     | none                               | `200 { "data": { "accounts": [account] } }`                                      |
+| GET    | `/accounts/:accountId`             | session                     | none                               | `200 { "data": { "account" } }`                                                  |
+| POST   | `/accounts/:accountId/deposits`    | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                                   |
+| POST   | `/accounts/:accountId/withdrawals` | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                                   |
+| POST   | `/accounts/:accountId/transfers`   | session + `Idempotency-Key` | `{ destinationAccountId, amount }` | `201 { "data": { "transaction", "account", "destinationAccount" } }`             |
+| GET    | `/transactions`                    | session                     | none (query parameters)            | `200 { "data": { "transactions": [item], "nextCursor" } }`                       |
 
 - `customer` is `{ id, email, fullName }`.
 - `account` is `{ id, accountNumber, type, currency, balance, createdAt }`. `type` is `checking` or
@@ -279,6 +291,7 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 | `BALANCE_LIMIT_EXCEEDED`        | 422    | Deposit would exceed the largest exactly representable balance         |
 | `RATE_LIMITED`                  | 429    | Too many failed logins or money movements; `details.retryAfterSeconds` |
 | `INTERNAL_ERROR`                | 500    | Unexpected error; details are logged, not returned                     |
+| `SERVICE_UNAVAILABLE`           | 503    | Readiness check failed or shutdown in progress; see `details`          |
 
 ## Authentication
 
@@ -540,8 +553,8 @@ unknown routes are not echoed back.
 **Logging.** One line per request: method, path without query string, status, duration, request
 id and customer id. Never headers, cookies, tokens, bodies, amounts, balances, account numbers or
 idempotency keys. Error logs drop the row data PostgreSQL attaches to errors (`detail`, `where`,
-`hint`). A client-supplied `X-Request-Id` is reused only if it is a short plain token, so it
-cannot inject log lines or headers.
+`hint`) and mask credentials in any URL. A client-supplied `X-Request-Id` is reused only if it is
+a short plain token, so it cannot inject log lines or headers. See "Production operations" below.
 
 **Known limitations.**
 
@@ -557,6 +570,80 @@ on by `NODE_ENV=production`); set a unique random `SESSION_SECRET` from a secret
 the API reachable only through the web app's proxy or a gateway; add per-IP rate limiting at the
 edge with a shared store (e.g. Redis); run the database with least-privilege credentials and TLS;
 and forward logs to a central store with retention limits.
+
+## Production operations
+
+**Health checks.** Neither needs a session; both return `Cache-Control: no-store`.
+
+| Endpoint                   | Meaning                                                                                                                                            | Use for                        |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `GET /api/v1/health`       | The process is up. Touches nothing else, so a database outage never makes it look dead.                                                            | Liveness (restart if it fails) |
+| `GET /api/v1/health/ready` | PostgreSQL answers `SELECT 1` within 2 s and shutdown has not begun. Otherwise `503 SERVICE_UNAVAILABLE` with `details` saying which check failed. | Readiness (route traffic)      |
+
+The `503` never includes the database host, user, connection string or error. Note that a pool
+saturated for longer than the readiness timeout also reports "not ready".
+
+**Request ids.** Every request gets an id: the caller's `X-Request-Id` if it is 1–64 characters
+of letters, digits, `.`, `_` or `-`, otherwise a random UUID. It is returned in the
+`X-Request-Id` header, included in every error body as `requestId`, and present on every log line
+for that request (`req.id`). To investigate a report, search the logs for the id the user saw.
+
+**Logs** are JSON, one object per line on stdout, with `time` (ISO 8601), `level`, `service`
+(`banking-api`), `env`, `pid` and `hostname`. Each completed request writes one access line
+(`msg` is `request completed` or `request failed`) with `req.{id, method, path}`,
+`res.statusCode`, `durationMs`, `customerId` once authenticated, and `errorCode` for failures.
+Levels: `error` for 5xx, `info` for everything else, and `debug` for successful health checks so
+probes don't flood the logs. Unexpected errors also write an `Unhandled error` line with the
+sanitised error. What is never logged is listed under Security.
+
+**Graceful shutdown.** On `SIGTERM` or `SIGINT` the API:
+
+1. marks itself not ready (`/health/ready` turns `503`), so a load balancer stops sending traffic;
+2. stops accepting connections and closes idle keep-alive ones;
+3. lets in-flight requests finish;
+4. closes the database pool;
+5. exits with `0`, or `1` if anything failed.
+
+If requests are still running after `SHUTDOWN_TIMEOUT_MS` (default 10 s), it closes the remaining
+connections and exits with `1`, so shutdown can never hang. Repeated signals are ignored. An
+uncaught exception or unhandled promise rejection is logged and exits with `1`, so a supervisor
+restarts the process.
+
+**Database.** One pool per process, `DB_POOL_MAX` connections (default 10). When all are busy a
+request waits up to `DB_CONNECTION_TIMEOUT_MS` for one and then fails with a `500`, rather than
+queueing indefinitely. Every statement, and every transaction left idle, is cut off after
+`DB_STATEMENT_TIMEOUT_MS`, so row locks are never held indefinitely. Errors on idle connections
+are logged, not fatal. Size the pool so that `DB_POOL_MAX` × instances stays below the database's
+connection limit.
+
+**Build, test and run.**
+
+```bash
+npm run install:all
+npm run build
+npm test
+```
+
+```bash
+cd backend && node dist/db/scripts/migrate.js up && npm start
+```
+
+```bash
+cd frontend && npm start
+```
+
+`npm test` needs the test database from `TEST_DATABASE_URL`. The backend serves on `PORT`; the web
+app serves on 3000 and proxies `/api` to `API_PROXY_TARGET`. Migrations run from the compiled
+output (`dist/`), so they also work on a production install without dev dependencies; the
+`npm run db:migrate` and `db:seed` scripts use `tsx` and are meant for development.
+
+**Operational limitations.**
+
+- Rate-limit counters live in memory: they are per instance and reset on restart.
+- Readiness checks only the database; there are no metrics or tracing endpoints. Request ids are
+  the correlation mechanism.
+- Logs go to stdout; shipping, retention and alerting are left to the platform.
+- Graceful shutdown relies on POSIX signals; on Windows only `SIGINT` (Ctrl+C) is delivered.
 
 ## Scripts
 
@@ -579,6 +666,7 @@ To run one area of the test suite, for example the transfer tests, from `backend
 npx vitest run tests/integration/transfers
 npx vitest run tests/integration/history
 npx vitest run tests/integration/security
+npx vitest run tests/integration/observability tests/unit/shutdown.test.ts
 ```
 
 ## Design notes

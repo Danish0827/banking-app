@@ -1,12 +1,6 @@
 import type { ErrorRequestHandler } from "express";
 import { AppError } from "../errors/AppError.js";
-
-interface ErrorBody {
-  status: number;
-  code: string;
-  message: string;
-  details?: unknown;
-}
+import { sendError, type ErrorBody } from "./errorResponse.js";
 
 /** Errors raised by Express's body parser, keyed by their `type`. */
 const BODY_PARSER_ERRORS: Record<string, ErrorBody> = {
@@ -30,6 +24,13 @@ const BODY_PARSER_ERRORS: Record<string, ErrorBody> = {
     code: "UNSUPPORTED_MEDIA_TYPE",
     message: "Unsupported Content-Encoding",
   },
+};
+
+/** Everything that is not a known client error. Deliberately says nothing specific. */
+const INTERNAL_ERROR: ErrorBody = {
+  status: 500,
+  code: "INTERNAL_ERROR",
+  message: "An unexpected error occurred",
 };
 
 /** Any other client error raised by Express itself (e.g. a malformed %-escape in the URL). */
@@ -74,24 +75,12 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
 
   const known = toErrorBody(err);
   if (known) {
-    res.status(known.status).json({
-      error: {
-        code: known.code,
-        message: known.message,
-        ...(known.details !== undefined && { details: known.details }),
-        requestId: String(req.id),
-      },
-    });
+    sendError(req, res, known);
     return;
   }
 
-  req.log.error({ err }, "Unhandled error");
-
-  res.status(500).json({
-    error: {
-      code: "INTERNAL_ERROR",
-      message: "An unexpected error occurred",
-      requestId: String(req.id),
-    },
-  });
+  // The only place an error's details are recorded: in the log, through the
+  // safe error serializer (config/logger.ts), never in the response.
+  req.log.error({ err, errorCode: INTERNAL_ERROR.code }, "Unhandled error");
+  sendError(req, res, INTERNAL_ERROR);
 };

@@ -1,6 +1,24 @@
 import type { NextConfig } from "next";
 
-const apiProxyTarget = process.env.API_PROXY_TARGET ?? "http://localhost:4000";
+/**
+ * The backend that /api/* is proxied to. Validated when the app builds or
+ * starts, so a typo fails loudly instead of producing a broken proxy.
+ */
+function resolveApiProxyTarget(value: string | undefined): string {
+  const target = value ?? "http://localhost:4000";
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    throw new Error("API_PROXY_TARGET must be an absolute http(s) URL, e.g. http://localhost:4000");
+  }
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password) {
+    throw new Error("API_PROXY_TARGET must be an http(s) URL without credentials");
+  }
+  return url.origin;
+}
+
+const apiProxyTarget = resolveApiProxyTarget(process.env.API_PROXY_TARGET);
 const isDevelopment = process.env.NODE_ENV === "development";
 
 /**

@@ -3,6 +3,9 @@ import express, { type Express } from "express";
 import type { Logger } from "pino";
 import { env } from "./config/env.js";
 import { logger as defaultLogger } from "./config/logger.js";
+import { checkDatabaseConnection } from "./db/pool.js";
+import { isShuttingDown } from "./lifecycle.js";
+import type { ReadinessOptions } from "./modules/health/health.controller.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { notFound } from "./middleware/notFound.js";
 import { originPolicy } from "./middleware/originPolicy.js";
@@ -18,10 +21,15 @@ interface AppOptions {
   corsAllowedOrigins?: readonly string[];
   /** Overrides MONEY_RATE_LIMIT_PER_MINUTE. */
   moneyRateLimitPerMinute?: number;
+  /** Overrides the readiness check's database probe, timeout and shutdown state. */
+  readiness?: Partial<ReadinessOptions>;
 }
 
 /** Largest accepted JSON body. Every request this API takes is far smaller. */
 const JSON_BODY_LIMIT = "10kb";
+
+/** A readiness probe that takes longer than this reports "not ready". */
+const READINESS_TIMEOUT_MS = 2_000;
 
 /**
  * Builds the Express app without binding a port, so tests can drive it
@@ -32,6 +40,7 @@ export function createApp({
   logger = defaultLogger,
   corsAllowedOrigins = env.CORS_ALLOWED_ORIGINS,
   moneyRateLimitPerMinute = env.MONEY_RATE_LIMIT_PER_MINUTE,
+  readiness = {},
 }: AppOptions = {}): Express {
   const app = express();
 
@@ -51,7 +60,17 @@ export function createApp({
     next();
   });
 
-  app.use("/api/v1", createV1Router({ moneyRateLimitPerMinute }));
+  app.use(
+    "/api/v1",
+    createV1Router({
+      moneyRateLimitPerMinute,
+      readiness: {
+        checkDatabase: readiness.checkDatabase ?? (() => checkDatabaseConnection()),
+        timeoutMs: readiness.timeoutMs ?? READINESS_TIMEOUT_MS,
+        isShuttingDown: readiness.isShuttingDown ?? isShuttingDown,
+      },
+    }),
+  );
 
   app.use(notFound);
   app.use(errorHandler);

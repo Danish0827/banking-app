@@ -52,6 +52,15 @@ const envSchema = z
     DATABASE_URL: postgresUrl.optional(),
     TEST_DATABASE_URL: postgresUrl.optional(),
     DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+    // How long to wait for a free pool connection before failing the request.
+    DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5_000),
+    // How long an unused connection stays open before the pool closes it.
+    DB_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(30_000),
+    // Upper bound for any single statement, and for a transaction left idle
+    // while holding row locks.
+    DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(100).max(300_000).default(10_000),
+    // On SIGTERM/SIGINT, how long in-flight requests get to finish before exit.
+    SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(10_000),
     // Signs session tokens. Required in every environment; there is no default.
     SESSION_SECRET: z
       .string({ error: "Required" })
@@ -69,12 +78,8 @@ const envSchema = z
     MONEY_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(30),
   })
   .superRefine((value, ctx) => {
-    if (value.NODE_ENV === "production" && value.SESSION_SECRET === EXAMPLE_SESSION_SECRET) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["SESSION_SECRET"],
-        message: "Must not be the placeholder from .env.example in production",
-      });
+    if (value.NODE_ENV === "production") {
+      checkProductionSafety(value, ctx);
     }
 
     if (value.NODE_ENV !== "test") {
@@ -99,6 +104,45 @@ const envSchema = z
     }
   });
 
+/** Minimum number of different characters in a production SESSION_SECRET. */
+const MIN_DISTINCT_SECRET_CHARACTERS = 10;
+
+/**
+ * Settings that are tolerable for local development but unsafe in
+ * production. Messages name the variable and the rule, never the value.
+ */
+function checkProductionSafety(
+  value: {
+    SESSION_SECRET: string;
+    CORS_ALLOWED_ORIGINS: string[];
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.SESSION_SECRET === EXAMPLE_SESSION_SECRET) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["SESSION_SECRET"],
+      message: "Must not be the placeholder from .env.example in production",
+    });
+  } else if (new Set(value.SESSION_SECRET).size < MIN_DISTINCT_SECRET_CHARACTERS) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["SESSION_SECRET"],
+      message: "Looks too simple for production; generate a random secret",
+    });
+  }
+
+  for (const origin of value.CORS_ALLOWED_ORIGINS) {
+    if (!origin.startsWith("https://")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CORS_ALLOWED_ORIGINS"],
+        message: "Origins must use https in production",
+      });
+    }
+  }
+}
+
 type ParsedEnv = z.infer<typeof envSchema>;
 
 export interface Env {
@@ -112,6 +156,10 @@ export interface Env {
    */
   DATABASE_URL: string;
   DB_POOL_MAX: number;
+  DB_CONNECTION_TIMEOUT_MS: number;
+  DB_IDLE_TIMEOUT_MS: number;
+  DB_STATEMENT_TIMEOUT_MS: number;
+  SHUTDOWN_TIMEOUT_MS: number;
   SESSION_SECRET: string;
   SESSION_TTL_SECONDS: number;
   CORS_ALLOWED_ORIGINS: string[];
@@ -136,6 +184,10 @@ function loadEnv(): Env {
     // The schema refinement above guarantees the active URL is present.
     DATABASE_URL: databaseUrl as string,
     DB_POOL_MAX: parsed.data.DB_POOL_MAX,
+    DB_CONNECTION_TIMEOUT_MS: parsed.data.DB_CONNECTION_TIMEOUT_MS,
+    DB_IDLE_TIMEOUT_MS: parsed.data.DB_IDLE_TIMEOUT_MS,
+    DB_STATEMENT_TIMEOUT_MS: parsed.data.DB_STATEMENT_TIMEOUT_MS,
+    SHUTDOWN_TIMEOUT_MS: parsed.data.SHUTDOWN_TIMEOUT_MS,
     SESSION_SECRET: parsed.data.SESSION_SECRET,
     SESSION_TTL_SECONDS: parsed.data.SESSION_TTL_MINUTES * 60,
     CORS_ALLOWED_ORIGINS: parsed.data.CORS_ALLOWED_ORIGINS,

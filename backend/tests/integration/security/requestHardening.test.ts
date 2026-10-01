@@ -66,6 +66,19 @@ describe("request hardening", () => {
       expect(setCookies(res)).toEqual([]);
     });
 
+    it("accepts a body-less request whatever Content-Type it declares", async () => {
+      // Some clients send a default Content-Type with `Content-Length: 0` on
+      // POSTs without a body; logout must still work for them.
+      const res = await request(app)
+        .post("/api/v1/auth/logout")
+        .set("Content-Type", "application/x-www-form-urlencoded")
+        .set("Content-Length", "0")
+        .send("");
+
+      expect(res.status).toBe(204);
+      expect(setCookies(res).some((cookie) => cookie.startsWith("session=;"))).toBe(true);
+    });
+
     it("refuses JSON in a charset other than UTF-8 with 415, not 500", async () => {
       const res = await request(app)
         .post("/api/v1/auth/login")

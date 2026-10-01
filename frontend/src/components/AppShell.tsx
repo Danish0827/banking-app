@@ -68,7 +68,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <>
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-6 py-4">
+        {/* Wraps onto two lines on narrow screens instead of overflowing. */}
+        <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-x-4 gap-y-3 px-6 py-4">
           <div className="flex items-center gap-6">
             <Link href="/" className="text-lg font-semibold tracking-tight">
               Banking App
@@ -83,7 +84,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </nav>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-sm text-slate-600" title={customer.email}>
+            <span className="hidden text-sm text-slate-600 sm:inline" title={customer.email}>
               {customer.fullName}
             </span>
             <button

@@ -3,8 +3,8 @@ import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
 import { checkDatabaseConnection, pool } from "./db/pool.js";
-
-const SHUTDOWN_TIMEOUT_MS = 10_000;
+import { markShuttingDown } from "./lifecycle.js";
+import { createShutdownHandler } from "./shutdown.js";
 
 // Bound how long a client may take to send a request, so slow or stalled
 // connections cannot hold server resources indefinitely.
@@ -16,7 +16,7 @@ async function start(): Promise<Server> {
   await checkDatabaseConnection();
 
   const server = createApp().listen(env.PORT, () => {
-    logger.info({ port: env.PORT, env: env.NODE_ENV }, "API server listening");
+    logger.info({ port: env.PORT }, "API server listening");
   });
   server.headersTimeout = HEADERS_TIMEOUT_MS;
   server.requestTimeout = REQUEST_TIMEOUT_MS;
@@ -24,28 +24,29 @@ async function start(): Promise<Server> {
 }
 
 function registerShutdown(server: Server): void {
-  const shutdown = (signal: NodeJS.Signals): void => {
-    logger.info({ signal }, "Shutting down");
-
-    // Stop accepting requests, let in-flight ones finish, then close the pool.
-    server.close((err) => {
-      if (err) logger.error({ err }, "Error while closing server");
-
-      pool
-        .end()
-        .catch((poolErr: unknown) => {
-          logger.error({ err: poolErr }, "Error while closing database pool");
-        })
-        .finally(() => process.exit(err ? 1 : 0));
-    });
-
-    // Don't let a hung connection keep the process alive indefinitely.
-    setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS).unref();
-  };
+  const shutdown = createShutdownHandler({
+    server,
+    closeDatabase: () => pool.end(),
+    logger,
+    timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
+    exit: (code) => process.exit(code),
+    onShutdownStart: markShuttingDown,
+  });
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }
+
+// A failure nothing caught leaves the process in an unknown state: record it
+// (through the safe error serializer) and exit, so a supervisor restarts it.
+process.on("uncaughtException", (err) => {
+  logger.fatal({ err }, "Uncaught exception");
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  logger.fatal({ err: reason }, "Unhandled promise rejection");
+  process.exit(1);
+});
 
 start()
   .then(registerShutdown)
