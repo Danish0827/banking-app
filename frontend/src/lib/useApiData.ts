@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "./api";
 
 export type ApiDataState<T> =
@@ -10,15 +10,22 @@ export type ApiDataState<T> =
   /** `error` is the API's error, or `null` for an unexpected failure. */
   | { status: "error"; error: ApiError | null };
 
+export type ApiData<T> = ApiDataState<T> & {
+  /** Fetches the data again. The current data stays visible until the new data arrives. */
+  reload: () => void;
+};
+
 /**
  * Loads data from the API when the component mounts. If the session has ended
  * (401), the user is sent to the login page instead of seeing an error.
  *
  * `load` must be stable between renders (wrap it in `useCallback`).
  */
-export function useApiData<T>(load: (signal: AbortSignal) => Promise<T>): ApiDataState<T> {
+export function useApiData<T>(load: (signal: AbortSignal) => Promise<T>): ApiData<T> {
   const router = useRouter();
   const [state, setState] = useState<ApiDataState<T>>({ status: "loading" });
+  const [version, setVersion] = useState(0);
+  const reload = useCallback(() => setVersion((current) => current + 1), []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -36,7 +43,7 @@ export function useApiData<T>(load: (signal: AbortSignal) => Promise<T>): ApiDat
       });
 
     return () => controller.abort();
-  }, [load, router]);
+  }, [load, router, version]);
 
-  return state;
+  return { ...state, reload };
 }

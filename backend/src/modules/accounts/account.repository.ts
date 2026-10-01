@@ -43,3 +43,33 @@ export async function findAccountByIdForCustomer(
   );
   return rows[0] ?? null;
 }
+
+/**
+ * Like `findAccountByIdForCustomer`, but also locks the account row until the
+ * current database transaction ends. Concurrent money movements on the same
+ * account wait here until the lock holder commits or rolls back, then read the
+ * committed balance. Must be called on the transaction's client.
+ */
+export async function lockAccountForCustomer(
+  client: Queryable,
+  accountId: string,
+  customerId: string,
+): Promise<Account | null> {
+  const { rows } = await client.query<Account>(
+    `SELECT ${ACCOUNT_COLUMNS}
+     FROM accounts
+     WHERE id = $1 AND customer_id = $2
+     FOR UPDATE`,
+    [accountId, customerId],
+  );
+  return rows[0] ?? null;
+}
+
+/** Sets an account's balance. Call only while holding the row lock. */
+export async function updateAccountBalance(
+  client: Queryable,
+  accountId: string,
+  balance: number,
+): Promise<void> {
+  await client.query("UPDATE accounts SET balance = $2 WHERE id = $1", [accountId, balance]);
+}

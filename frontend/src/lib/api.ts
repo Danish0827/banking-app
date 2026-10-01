@@ -21,6 +21,7 @@ export class ApiError extends Error {
 interface RequestOptions {
   method?: "GET" | "POST";
   body?: unknown;
+  headers?: Record<string, string>;
   signal?: AbortSignal;
 }
 
@@ -34,7 +35,7 @@ interface ErrorEnvelope {
  * HTTP-only, so this code never sees or handles it.
  */
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, signal } = options;
+  const { method = "GET", body, headers, signal } = options;
 
   let response: Response;
   try {
@@ -42,7 +43,10 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
       method,
       signal,
       credentials: "same-origin",
-      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      headers: {
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...headers,
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (err) {

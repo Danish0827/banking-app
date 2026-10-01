@@ -5,6 +5,8 @@ declare global {
     interface Request {
       /** Present once `requireAuth` has verified the session. */
       auth?: AuthContext;
+      /** Present once `requireIdempotencyKey` has validated the header. */
+      idempotencyKey?: string;
     }
   }
 }

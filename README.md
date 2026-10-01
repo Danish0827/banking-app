@@ -3,8 +3,8 @@
 A simple banking web application: view accounts, deposit, withdraw, transfer between customers
 and browse transaction history.
 
-> **Status:** customers can sign in and view their own accounts. Deposits, withdrawals, transfers
-> and transaction history are added in later milestones.
+> **Status:** customers can sign in, view their own accounts, and deposit and withdraw money.
+> Transfers and transaction history are added in later milestones.
 
 ## Tech stack
 
@@ -31,7 +31,7 @@ banking-app/
 │   │   ├── errors/           Application error classes
 │   │   ├── lib/              Shared helpers (password hashing)
 │   │   ├── middleware/       Request logging, validation, auth, 404 and error handlers
-│   │   ├── modules/          Feature modules: accounts, auth, customers, health
+│   │   ├── modules/          Feature modules: accounts, auth, customers, health, transactions
 │   │   ├── routes/           Versioned API routers
 │   │   ├── app.ts            Express app factory (no port binding; used by tests)
 │   │   └── server.ts         Process entry point
@@ -231,30 +231,37 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 `{ "error": { "code", "message", "details?", "requestId" } }`. Every response carries an
 `X-Request-Id` header and `Cache-Control: no-store`.
 
-| Method | Path                   | Auth    | Request body          | Success response                                  |
-| ------ | ---------------------- | ------- | --------------------- | ------------------------------------------------- |
-| GET    | `/health`              | none    | none                  | `200 { "data": { "status": "ok" } }`              |
-| POST   | `/auth/login`          | none    | `{ email, password }` | `200 { "data": { "customer" } }` + session cookie |
-| POST   | `/auth/logout`         | none    | none                  | `204`, clears the session cookie                  |
-| GET    | `/auth/me`             | session | none                  | `200 { "data": { "customer" } }`                  |
-| GET    | `/accounts`            | session | none                  | `200 { "data": { "accounts": [account] } }`       |
-| GET    | `/accounts/:accountId` | session | none                  | `200 { "data": { "account" } }`                   |
+| Method | Path                               | Auth                        | Request body          | Success response                                  |
+| ------ | ---------------------------------- | --------------------------- | --------------------- | ------------------------------------------------- |
+| GET    | `/health`                          | none                        | none                  | `200 { "data": { "status": "ok" } }`              |
+| POST   | `/auth/login`                      | none                        | `{ email, password }` | `200 { "data": { "customer" } }` + session cookie |
+| POST   | `/auth/logout`                     | none                        | none                  | `204`, clears the session cookie                  |
+| GET    | `/auth/me`                         | session                     | none                  | `200 { "data": { "customer" } }`                  |
+| GET    | `/accounts`                        | session                     | none                  | `200 { "data": { "accounts": [account] } }`       |
+| GET    | `/accounts/:accountId`             | session                     | none                  | `200 { "data": { "account" } }`                   |
+| POST   | `/accounts/:accountId/deposits`    | session + `Idempotency-Key` | `{ amount }`          | `201 { "data": { "transaction", "account" } }`    |
+| POST   | `/accounts/:accountId/withdrawals` | session + `Idempotency-Key` | `{ amount }`          | `201 { "data": { "transaction", "account" } }`    |
 
 - `customer` is `{ id, email, fullName }`.
 - `account` is `{ id, accountNumber, type, currency, balance, createdAt }`. `type` is `checking` or
   `savings`, and `balance` is an integer number of minor units (cents): `250000` means $2,500.00.
+- `transaction` is `{ id, type, accountId, amount, currency, balanceAfter, createdAt }`, with
+  `amount` and `balanceAfter` in cents.
 
-| Error code            | Status | Meaning                                                      |
-| --------------------- | ------ | ------------------------------------------------------------ |
-| `VALIDATION_ERROR`    | 400    | Invalid input; `details` lists `{ path, message }` per field |
-| `INVALID_JSON`        | 400    | The request body is not valid JSON                           |
-| `INVALID_CREDENTIALS` | 401    | Login failed (unknown email or wrong password)               |
-| `UNAUTHENTICATED`     | 401    | Missing, invalid or expired session                          |
-| `ACCOUNT_NOT_FOUND`   | 404    | No such account, or it belongs to another customer           |
-| `NOT_FOUND`           | 404    | Unknown route                                                |
-| `PAYLOAD_TOO_LARGE`   | 413    | Request body over 10kb                                       |
-| `RATE_LIMITED`        | 429    | Too many failed logins; `details.retryAfterSeconds`          |
-| `INTERNAL_ERROR`      | 500    | Unexpected error; details are logged, not returned           |
+| Error code               | Status | Meaning                                                        |
+| ------------------------ | ------ | -------------------------------------------------------------- |
+| `VALIDATION_ERROR`       | 400    | Invalid input; `details` lists `{ path, message }` per field   |
+| `INVALID_JSON`           | 400    | The request body is not valid JSON                             |
+| `INVALID_CREDENTIALS`    | 401    | Login failed (unknown email or wrong password)                 |
+| `UNAUTHENTICATED`        | 401    | Missing, invalid or expired session                            |
+| `ACCOUNT_NOT_FOUND`      | 404    | No such account, or it belongs to another customer             |
+| `IDEMPOTENCY_CONFLICT`   | 409    | `Idempotency-Key` already used for a different request         |
+| `NOT_FOUND`              | 404    | Unknown route                                                  |
+| `PAYLOAD_TOO_LARGE`      | 413    | Request body over 10kb                                         |
+| `INSUFFICIENT_FUNDS`     | 422    | Withdrawal larger than the balance                             |
+| `BALANCE_LIMIT_EXCEEDED` | 422    | Deposit would exceed the largest exactly representable balance |
+| `RATE_LIMITED`           | 429    | Too many failed logins; `details.retryAfterSeconds`            |
+| `INTERNAL_ERROR`         | 500    | Unexpected error; details are logged, not returned             |
 
 ## Authentication
 
@@ -278,6 +285,12 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 - **`X-Request-Id`** from the client is reused only if it is 1–64 characters of letters, digits,
   `.`, `_` or `-`; otherwise a new id is generated.
 
+### Production improvements
+
+- Server-side session store (or token denylist) so logout and password changes revoke sessions.
+- Rate limiting at the edge by client IP, with a shared store such as Redis across instances.
+- MFA, account lockout notifications and refresh-token rotation.
+
 ## Accounts
 
 - **Authentication.** Both account endpoints require a session and return `401 UNAUTHENTICATED`
@@ -292,11 +305,49 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 - **In the UI** account numbers are masked to the last four digits. The detail page can reveal the
   customer's own full number on request.
 
-### Production improvements
+## Deposits and withdrawals
 
-- Server-side session store (or token denylist) so logout and password changes revoke sessions.
-- Rate limiting at the edge by client IP, with a shared store such as Redis across instances.
-- MFA, account lockout notifications and refresh-token rotation.
+```http
+POST /api/v1/accounts/00000000-0000-4000-8000-000000000101/deposits
+Content-Type: application/json
+Idempotency-Key: 6f1c2a4e-8d0b-4f7a-9c3e-2b5d7a9e1f40
+
+{ "amount": 1050 }
+```
+
+- **Amounts** are a JSON integer of cents: `1050` is $10.50. Zero, negative, fractional, string
+  and unsafe values are rejected with `400`, as is anything above `100000000` ($1,000,000.00) or
+  any field other than `amount`. The web app converts what the user types ("10.50") to cents by
+  parsing the text, never with floating-point arithmetic.
+- **Authentication and ownership** work as for accounts: a session is required, the customer comes
+  from the session, and someone else's account returns `404 ACCOUNT_NOT_FOUND`.
+- **Insufficient funds.** A withdrawal larger than the balance returns `422 INSUFFICIENT_FUNDS`
+  and changes nothing: no balance update, no transaction, no ledger entry. Overdrafts are not
+  supported, and `CHECK (balance >= 0)` in the database backs this up.
+- **Atomicity.** Each operation is one database transaction: lock the account row, check, update
+  the balance, insert the `transactions` row, insert the `ledger_entries` row, commit. Any error
+  rolls all of it back. Deposits are a credit entry on the destination account and withdrawals a
+  debit entry on the source account, as in the schema; `balance_after` records the running balance.
+- **Concurrency.** The account row is locked with `SELECT ... FOR UPDATE` before the balance is
+  read, so operations on the same account run one at a time and each sees the balance the previous
+  one committed. Two simultaneous $80 withdrawals from $100 result in one success and one
+  `INSUFFICIENT_FUNDS`. Different accounts never wait for each other.
+- **Idempotency.** The `Idempotency-Key` header is required (1–255 visible ASCII characters; the
+  web app sends a UUID per action). The key is stored on the transaction, where
+  `UNIQUE (initiated_by, idempotency_key)` already exists, so it is backed by PostgreSQL and
+  checked inside the same transaction as the money movement.
+  - The same key with the same operation, account and amount returns the original result
+    (`201`, header `Idempotent-Replayed: true`) without moving money again, including when the
+    duplicates arrive at the same time.
+  - The same key with a different amount, account or operation returns `409 IDEMPOTENCY_CONFLICT`.
+    A key identifies one request, so a deposit's key can never trigger a withdrawal.
+  - Keys are scoped per customer. A request that fails (for example `INSUFFICIENT_FUNDS`) stores
+    nothing, so its key can be used again.
+  - If the web app cannot confirm the outcome (network error or `5xx`), it keeps the key, and
+    submitting the same operation and amount again reuses it.
+
+Limitations: there are no descriptions, fees, holds or daily limits; and only successful requests
+are remembered for idempotency, so a retry of a refused request is evaluated afresh.
 
 ## Scripts
 

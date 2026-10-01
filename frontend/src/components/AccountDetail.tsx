@@ -5,6 +5,7 @@ import { useCallback, useState } from "react";
 import { getAccount } from "@/lib/accounts";
 import { formatAccountType, formatDate, formatMoney, maskAccountNumber } from "@/lib/format";
 import { useApiData } from "@/lib/useApiData";
+import { MoneyMovementForm } from "./MoneyMovementForm";
 
 const BACK_LINK_CLASSES = "text-sm font-medium text-slate-600 hover:text-slate-900";
 
@@ -90,6 +91,8 @@ export function AccountDetail({ accountId }: { accountId: string }) {
           </div>
         </dl>
       </section>
+
+      <MoneyMovementForm account={data} onCompleted={account.reload} />
     </div>
   );
 }

@@ -50,6 +50,30 @@ export class AccountNotFoundError extends AppError {
   }
 }
 
+export class InsufficientFundsError extends AppError {
+  constructor() {
+    super(422, "INSUFFICIENT_FUNDS", "Insufficient funds for this withdrawal");
+  }
+}
+
+/** A deposit would take the balance beyond what can be represented exactly. */
+export class BalanceLimitExceededError extends AppError {
+  constructor() {
+    super(422, "BALANCE_LIMIT_EXCEEDED", "This deposit would exceed the maximum account balance");
+  }
+}
+
+/** The idempotency key was already used for a different request. */
+export class IdempotencyConflictError extends AppError {
+  constructor() {
+    super(
+      409,
+      "IDEMPOTENCY_CONFLICT",
+      "This Idempotency-Key was already used for a different request",
+    );
+  }
+}
+
 export class RateLimitedError extends AppError {
   constructor(retryAfterSeconds: number) {
     super(429, "RATE_LIMITED", "Too many attempts. Please try again later.", {
