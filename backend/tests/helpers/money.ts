@@ -8,7 +8,7 @@ import { deposit } from "../../src/modules/transactions/transaction.service.js";
 import { cookieHeader } from "./auth.js";
 import { createAccount, createCustomer } from "./fixtures.js";
 
-export type Operation = "deposits" | "withdrawals";
+export type Operation = "deposits" | "withdrawals" | "transfers";
 
 interface MovementOptions {
   cookie?: string;
@@ -119,4 +119,30 @@ export async function countRows(table: "transactions" | "ledger_entries"): Promi
     `SELECT count(*)::int AS count FROM ${table}`,
   );
   return rows[0]?.count as number;
+}
+
+/**
+ * Opens another account for an existing customer. A non-zero opening balance
+ * is paid in through the real deposit path, so the ledger matches the balance.
+ */
+export async function addAccount(customerId: string, openingBalance = 0): Promise<string> {
+  const accountId = await createAccount(customerId);
+  if (openingBalance > 0) {
+    await deposit(
+      { customerId },
+      { accountId, amount: openingBalance, idempotencyKey: `opening-${randomUUID()}` },
+    );
+  }
+  return accountId;
+}
+
+/** POST /accounts/:sourceAccountId/transfers. */
+export function postTransfer(
+  app: Express,
+  sourceAccountId: string,
+  destinationAccountId: string,
+  amount: number,
+  options: MovementOptions = {},
+) {
+  return postMovement(app, "transfers", sourceAccountId, { destinationAccountId, amount }, options);
 }

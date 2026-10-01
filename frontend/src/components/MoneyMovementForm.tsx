@@ -1,32 +1,20 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import type { Account } from "@/lib/accounts";
 import { ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
-import { newIdempotencyKey } from "@/lib/idempotency";
 import { parseAmountToCents } from "@/lib/money";
 import { moveMoney, type MovementType } from "@/lib/transactions";
+import { isOutcomeUnknown, useIdempotencyKey } from "@/lib/useIdempotencyKey";
 
 type Feedback = { kind: "success" | "error"; message: string } | null;
-
-/** The request whose outcome is unknown and may be retried with the same key. */
-interface PendingRequest {
-  type: MovementType;
-  cents: number;
-  idempotencyKey: string;
-}
 
 const LABELS: Record<MovementType, { action: string; done: string; noun: string }> = {
   deposit: { action: "Deposit", done: "Deposited", noun: "deposit" },
   withdrawal: { action: "Withdraw", done: "Withdrew", noun: "withdrawal" },
 };
-
-/** A failure where we can't know whether the server applied the request. */
-function outcomeUnknown(err: unknown): boolean {
-  return err instanceof ApiError && (err.status === 0 || err.status >= 500);
-}
 
 function errorMessage(err: unknown, type: MovementType, account: Account): string {
   if (!(err instanceof ApiError)) {
@@ -44,7 +32,7 @@ function errorMessage(err: unknown, type: MovementType, account: Account): strin
     case "IDEMPOTENCY_CONFLICT":
       return "This request clashed with an earlier one. Please try again.";
     default:
-      return outcomeUnknown(err)
+      return isOutcomeUnknown(err)
         ? `We couldn't confirm the ${LABELS[type].noun}. Submitting the same amount again is safe: it will not be applied twice.`
         : "Something went wrong. Please try again.";
   }
@@ -74,7 +62,7 @@ export function MoneyMovementForm({
   const [fieldError, setFieldError] = useState<string>();
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [submitting, setSubmitting] = useState(false);
-  const pending = useRef<PendingRequest | null>(null);
+  const idempotency = useIdempotencyKey();
 
   function selectType(next: MovementType) {
     setType(next);
@@ -94,17 +82,12 @@ export function MoneyMovementForm({
     }
     setFieldError(undefined);
 
-    const retry = pending.current;
-    const idempotencyKey =
-      retry && retry.type === type && retry.cents === parsed.cents
-        ? retry.idempotencyKey
-        : newIdempotencyKey();
-    pending.current = { type, cents: parsed.cents, idempotencyKey };
+    const idempotencyKey = idempotency.keyFor(`${type}:${parsed.cents}`);
 
     setSubmitting(true);
     try {
       await moveMoney(type, account.id, parsed.cents, idempotencyKey);
-      pending.current = null;
+      idempotency.settle();
       setAmount("");
       setFeedback({
         kind: "success",
@@ -116,9 +99,7 @@ export function MoneyMovementForm({
         router.replace("/login");
         return;
       }
-      if (!outcomeUnknown(err)) {
-        pending.current = null;
-      }
+      idempotency.settle(err);
       setFeedback({ kind: "error", message: errorMessage(err, type, account) });
     } finally {
       setSubmitting(false);

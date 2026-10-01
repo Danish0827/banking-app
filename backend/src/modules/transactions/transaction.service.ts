@@ -1,37 +1,26 @@
-import { isUniqueViolation } from "../../db/errors.js";
-import { pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/transaction.js";
-import {
-  AccountNotFoundError,
-  BalanceLimitExceededError,
-  IdempotencyConflictError,
-  InsufficientFundsError,
-} from "../../errors/AppError.js";
+import { AccountNotFoundError, IdempotencyConflictError } from "../../errors/AppError.js";
+import { pool } from "../../db/pool.js";
 import {
   findAccountByIdForCustomer,
   lockAccountForCustomer,
   updateAccountBalance,
 } from "../accounts/account.repository.js";
 import type { AuthContext } from "../auth/auth.types.js";
+import { credit, debit } from "./balance.js";
+import { loadCommittedTransaction, withIdempotencyGuard } from "./idempotency.js";
 import {
   findTransactionByIdempotencyKey,
   insertLedgerEntry,
-  insertMovementTransaction,
+  insertTransaction,
 } from "./transaction.repository.js";
 import type {
   MovementRequest,
   MovementResult,
   MovementTransaction,
   MovementType,
+  StoredTransaction,
 } from "./transaction.types.js";
-
-const IDEMPOTENCY_KEY_CONSTRAINT = "transactions_initiated_by_idempotency_key_key";
-
-/**
- * Balances are BIGINT in the database but handled as JavaScript numbers, which
- * are exact only up to 2^53 - 1. A deposit may not take a balance past that.
- */
-const MAX_BALANCE = Number.MAX_SAFE_INTEGER;
 
 export function deposit(auth: AuthContext, request: MovementRequest): Promise<MovementResult> {
   return moveMoney("deposit", auth, request);
@@ -53,84 +42,67 @@ export function withdraw(auth: AuthContext, request: MovementRequest): Promise<M
  * COMMIT, concurrent movements on the same account run one after another and
  * each sees the balance left by the previous one.
  */
-async function moveMoney(
+function moveMoney(
   type: MovementType,
   auth: AuthContext,
   request: MovementRequest,
 ): Promise<MovementResult> {
-  try {
-    return await withTransaction(async (client) => {
-      const account = await lockAccountForCustomer(client, request.accountId, auth.customerId);
-      if (!account) {
-        throw new AccountNotFoundError();
-      }
+  return withIdempotencyGuard(
+    () =>
+      withTransaction(async (client) => {
+        const account = await lockAccountForCustomer(client, request.accountId, auth.customerId);
+        if (!account) {
+          throw new AccountNotFoundError();
+        }
 
-      const previous = await findTransactionByIdempotencyKey(
-        client,
-        auth.customerId,
-        request.idempotencyKey,
-      );
-      if (previous) {
-        return { transaction: assertSameRequest(previous, type, request), account, replayed: true };
-      }
+        const previous = await findTransactionByIdempotencyKey(
+          client,
+          auth.customerId,
+          request.idempotencyKey,
+        );
+        if (previous) {
+          return { transaction: asSameMovement(previous, type, request), account, replayed: true };
+        }
 
-      const balanceAfter = applyMovement(type, account.balance, request.amount);
+        const balanceAfter =
+          type === "deposit"
+            ? credit(account.balance, request.amount)
+            : debit(account.balance, request.amount);
 
-      await updateAccountBalance(client, account.id, balanceAfter);
-      const recorded = await insertMovementTransaction(client, {
-        type,
-        accountId: account.id,
-        amount: request.amount,
-        currency: account.currency,
-        initiatedBy: auth.customerId,
-        idempotencyKey: request.idempotencyKey,
-      });
-      await insertLedgerEntry(client, {
-        transactionId: recorded.id,
-        accountId: account.id,
-        direction: type === "deposit" ? "credit" : "debit",
-        amount: request.amount,
-        balanceAfter,
-      });
-
-      return {
-        transaction: {
-          id: recorded.id,
+        await updateAccountBalance(client, account.id, balanceAfter);
+        const recorded = await insertTransaction(client, {
           type,
-          accountId: account.id,
           amount: request.amount,
           currency: account.currency,
+          sourceAccountId: type === "withdrawal" ? account.id : null,
+          destinationAccountId: type === "deposit" ? account.id : null,
+          initiatedBy: auth.customerId,
+          idempotencyKey: request.idempotencyKey,
+        });
+        await insertLedgerEntry(client, {
+          transactionId: recorded.id,
+          accountId: account.id,
+          direction: type === "deposit" ? "credit" : "debit",
+          amount: request.amount,
           balanceAfter,
-          createdAt: recorded.createdAt,
-        },
-        account: { ...account, balance: balanceAfter },
-        replayed: false,
-      };
-    });
-  } catch (err) {
-    // Two requests with the same key on *different* accounts don't share a row
-    // lock; the loser is stopped by the unique constraint instead. Its work
-    // has been rolled back, so answer as if it had arrived second.
-    if (isUniqueViolation(err, IDEMPOTENCY_KEY_CONSTRAINT)) {
-      return replayCommittedRequest(type, auth, request);
-    }
-    throw err;
-  }
-}
+        });
 
-/** New balance after the movement, in integer cents. */
-function applyMovement(type: MovementType, balance: number, amount: number): number {
-  if (type === "deposit") {
-    if (amount > MAX_BALANCE - balance) {
-      throw new BalanceLimitExceededError();
-    }
-    return balance + amount;
-  }
-
-  if (amount > balance) {
-    throw new InsufficientFundsError();
-  }
-  return balance - amount;
+        return {
+          transaction: {
+            id: recorded.id,
+            type,
+            accountId: account.id,
+            amount: request.amount,
+            currency: account.currency,
+            balanceAfter,
+            createdAt: recorded.createdAt,
+          },
+          account: { ...account, balance: balanceAfter },
+          replayed: false,
+        };
+      }),
+    () => replayCommittedMovement(type, auth, request),
+  );
 }
 
 /**
@@ -138,37 +110,43 @@ function applyMovement(type: MovementType, balance: number, amount: number): num
  * for the same operation, account and amount; anything else is a client error
  * and must never move money or return an unrelated result.
  */
-function assertSameRequest(
-  previous: Omit<MovementTransaction, "type"> & { type: string },
+function asSameMovement(
+  previous: StoredTransaction,
   type: MovementType,
   request: MovementRequest,
 ): MovementTransaction {
+  const accountId = type === "deposit" ? previous.destinationAccountId : previous.sourceAccountId;
+  const balanceAfter =
+    type === "deposit" ? previous.destinationBalanceAfter : previous.sourceBalanceAfter;
+
   if (
     previous.type !== type ||
-    previous.accountId !== request.accountId ||
-    previous.amount !== request.amount
+    accountId !== request.accountId ||
+    previous.amount !== request.amount ||
+    balanceAfter === null
   ) {
     throw new IdempotencyConflictError();
   }
-  return { ...previous, type };
+
+  return {
+    id: previous.id,
+    type,
+    accountId,
+    amount: previous.amount,
+    currency: previous.currency,
+    balanceAfter,
+    createdAt: previous.createdAt,
+  };
 }
 
-async function replayCommittedRequest(
+async function replayCommittedMovement(
   type: MovementType,
   auth: AuthContext,
   request: MovementRequest,
 ): Promise<MovementResult> {
-  const previous = await findTransactionByIdempotencyKey(
-    pool,
-    auth.customerId,
-    request.idempotencyKey,
-  );
-  if (!previous) {
-    // Not reachable: the constraint only fires once the other row is committed.
-    throw new Error("Idempotency key conflict without a committed transaction");
-  }
+  const previous = await loadCommittedTransaction(auth.customerId, request.idempotencyKey);
+  const transaction = asSameMovement(previous, type, request);
 
-  const transaction = assertSameRequest(previous, type, request);
   const account = await findAccountByIdForCustomer(pool, request.accountId, auth.customerId);
   if (!account) {
     throw new AccountNotFoundError();

@@ -73,3 +73,27 @@ export async function updateAccountBalance(
 ): Promise<void> {
   await client.query("UPDATE accounts SET balance = $2 WHERE id = $1", [accountId, balance]);
 }
+
+/**
+ * Locks any account by id, whoever owns it, and reports its owner separately
+ * so the caller decides what may be exposed. Used for a transfer's
+ * destination, which may belong to another customer. Must be called on the
+ * transaction's client.
+ */
+export async function lockAccountById(
+  client: Queryable,
+  accountId: string,
+): Promise<{ account: Account; customerId: string } | null> {
+  const { rows } = await client.query<Account & { customerId: string }>(
+    `SELECT ${ACCOUNT_COLUMNS}, customer_id AS "customerId"
+     FROM accounts
+     WHERE id = $1
+     FOR UPDATE`,
+    [accountId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  const { customerId, ...account } = row;
+  return { account, customerId };
+}

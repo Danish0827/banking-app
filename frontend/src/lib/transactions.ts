@@ -42,3 +42,38 @@ export function moveMoney(
     headers: { "Idempotency-Key": idempotencyKey },
   });
 }
+
+export interface TransferTransaction {
+  id: string;
+  type: "transfer";
+  sourceAccountId: string;
+  destinationAccountId: string;
+  /** Integer cents. */
+  amount: number;
+  currency: string;
+  /** The source account's balance right after the transfer, in cents. */
+  balanceAfter: number;
+  createdAt: string;
+}
+
+export interface TransferResult {
+  transaction: TransferTransaction;
+  /** The source account after the transfer. */
+  account: Account;
+  /** The destination after the transfer, only if it is one of the customer's own accounts. */
+  destinationAccount: Account | null;
+}
+
+/** Transfers integer cents from one of the customer's accounts to any account. */
+export function transferMoney(
+  sourceAccountId: string,
+  destinationAccountId: string,
+  amountCents: number,
+  idempotencyKey: string,
+): Promise<TransferResult> {
+  return apiFetch<TransferResult>(`/accounts/${encodeURIComponent(sourceAccountId)}/transfers`, {
+    method: "POST",
+    body: { destinationAccountId, amount: amountCents },
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}

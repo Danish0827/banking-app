@@ -51,15 +51,31 @@ export class AccountNotFoundError extends AppError {
 }
 
 export class InsufficientFundsError extends AppError {
-  constructor() {
-    super(422, "INSUFFICIENT_FUNDS", "Insufficient funds for this withdrawal");
+  constructor(message = "Insufficient funds for this withdrawal") {
+    super(422, "INSUFFICIENT_FUNDS", message);
   }
 }
 
-/** A deposit would take the balance beyond what can be represented exactly. */
+/** A credit would take a balance beyond what can be represented exactly. */
 export class BalanceLimitExceededError extends AppError {
+  constructor(message = "This deposit would exceed the maximum account balance") {
+    super(422, "BALANCE_LIMIT_EXCEEDED", message);
+  }
+}
+
+export class SameAccountTransferError extends AppError {
   constructor() {
-    super(422, "BALANCE_LIMIT_EXCEEDED", "This deposit would exceed the maximum account balance");
+    super(422, "SAME_ACCOUNT_TRANSFER", "Source and destination accounts must be different");
+  }
+}
+
+/**
+ * The transfer's destination does not exist. Unlike the source account, the
+ * destination may belong to anyone, so its existence is part of the answer.
+ */
+export class DestinationAccountNotFoundError extends AppError {
+  constructor() {
+    super(422, "DESTINATION_ACCOUNT_NOT_FOUND", "Destination account not found");
   }
 }
 

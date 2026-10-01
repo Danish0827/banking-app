@@ -3,8 +3,8 @@
 A simple banking web application: view accounts, deposit, withdraw, transfer between customers
 and browse transaction history.
 
-> **Status:** customers can sign in, view their own accounts, and deposit and withdraw money.
-> Transfers and transaction history are added in later milestones.
+> **Status:** customers can sign in, view their own accounts, deposit, withdraw, and transfer
+> money to any account. Transaction history is added in a later milestone.
 
 ## Tech stack
 
@@ -113,11 +113,16 @@ that customer's accounts; select one to see its details.
 
 `npm run db:seed` creates three customers, all with the password `Demo-Password-123`:
 
-| Customer      | Email               | Accounts                                                         |
-| ------------- | ------------------- | ---------------------------------------------------------------- |
-| Alice Johnson | `alice@example.com` | `1000000001` checking $2,500.00, `1000000002` savings $10,000.00 |
-| Bob Smith     | `bob@example.com`   | `1000000003` checking $1,200.00                                  |
-| Carol Davis   | `carol@example.com` | `1000000004` checking $500.00, `1000000005` savings $0.00        |
+| Customer      | Email               | Account      | Type     | Opening balance | Account ID                             |
+| ------------- | ------------------- | ------------ | -------- | --------------- | -------------------------------------- |
+| Alice Johnson | `alice@example.com` | `1000000001` | checking | $2,500.00       | `00000000-0000-4000-8000-000000000101` |
+|               |                     | `1000000002` | savings  | $10,000.00      | `00000000-0000-4000-8000-000000000102` |
+| Bob Smith     | `bob@example.com`   | `1000000003` | checking | $1,200.00       | `00000000-0000-4000-8000-000000000103` |
+| Carol Davis   | `carol@example.com` | `1000000004` | checking | $500.00         | `00000000-0000-4000-8000-000000000104` |
+|               |                     | `1000000005` | savings  | $0.00           | `00000000-0000-4000-8000-000000000105` |
+
+Transfers to another customer's account are addressed by its account ID; each account page shows
+its own ID for sharing.
 
 The seed is deterministic (fixed ids and account numbers) and safe to re-run: rows that already
 exist are left untouched, so it never resets balances or deletes history. Passwords are stored
@@ -231,37 +236,41 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 `{ "error": { "code", "message", "details?", "requestId" } }`. Every response carries an
 `X-Request-Id` header and `Cache-Control: no-store`.
 
-| Method | Path                               | Auth                        | Request body          | Success response                                  |
-| ------ | ---------------------------------- | --------------------------- | --------------------- | ------------------------------------------------- |
-| GET    | `/health`                          | none                        | none                  | `200 { "data": { "status": "ok" } }`              |
-| POST   | `/auth/login`                      | none                        | `{ email, password }` | `200 { "data": { "customer" } }` + session cookie |
-| POST   | `/auth/logout`                     | none                        | none                  | `204`, clears the session cookie                  |
-| GET    | `/auth/me`                         | session                     | none                  | `200 { "data": { "customer" } }`                  |
-| GET    | `/accounts`                        | session                     | none                  | `200 { "data": { "accounts": [account] } }`       |
-| GET    | `/accounts/:accountId`             | session                     | none                  | `200 { "data": { "account" } }`                   |
-| POST   | `/accounts/:accountId/deposits`    | session + `Idempotency-Key` | `{ amount }`          | `201 { "data": { "transaction", "account" } }`    |
-| POST   | `/accounts/:accountId/withdrawals` | session + `Idempotency-Key` | `{ amount }`          | `201 { "data": { "transaction", "account" } }`    |
+| Method | Path                               | Auth                        | Request body                       | Success response                                                     |
+| ------ | ---------------------------------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------- |
+| GET    | `/health`                          | none                        | none                               | `200 { "data": { "status": "ok" } }`                                 |
+| POST   | `/auth/login`                      | none                        | `{ email, password }`              | `200 { "data": { "customer" } }` + session cookie                    |
+| POST   | `/auth/logout`                     | none                        | none                               | `204`, clears the session cookie                                     |
+| GET    | `/auth/me`                         | session                     | none                               | `200 { "data": { "customer" } }`                                     |
+| GET    | `/accounts`                        | session                     | none                               | `200 { "data": { "accounts": [account] } }`                          |
+| GET    | `/accounts/:accountId`             | session                     | none                               | `200 { "data": { "account" } }`                                      |
+| POST   | `/accounts/:accountId/deposits`    | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                       |
+| POST   | `/accounts/:accountId/withdrawals` | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                       |
+| POST   | `/accounts/:accountId/transfers`   | session + `Idempotency-Key` | `{ destinationAccountId, amount }` | `201 { "data": { "transaction", "account", "destinationAccount" } }` |
 
 - `customer` is `{ id, email, fullName }`.
 - `account` is `{ id, accountNumber, type, currency, balance, createdAt }`. `type` is `checking` or
   `savings`, and `balance` is an integer number of minor units (cents): `250000` means $2,500.00.
 - `transaction` is `{ id, type, accountId, amount, currency, balanceAfter, createdAt }`, with
-  `amount` and `balanceAfter` in cents.
+  `amount` and `balanceAfter` in cents. For a transfer it has `sourceAccountId` and
+  `destinationAccountId` instead of `accountId`, and `balanceAfter` is the source's balance.
 
-| Error code               | Status | Meaning                                                        |
-| ------------------------ | ------ | -------------------------------------------------------------- |
-| `VALIDATION_ERROR`       | 400    | Invalid input; `details` lists `{ path, message }` per field   |
-| `INVALID_JSON`           | 400    | The request body is not valid JSON                             |
-| `INVALID_CREDENTIALS`    | 401    | Login failed (unknown email or wrong password)                 |
-| `UNAUTHENTICATED`        | 401    | Missing, invalid or expired session                            |
-| `ACCOUNT_NOT_FOUND`      | 404    | No such account, or it belongs to another customer             |
-| `IDEMPOTENCY_CONFLICT`   | 409    | `Idempotency-Key` already used for a different request         |
-| `NOT_FOUND`              | 404    | Unknown route                                                  |
-| `PAYLOAD_TOO_LARGE`      | 413    | Request body over 10kb                                         |
-| `INSUFFICIENT_FUNDS`     | 422    | Withdrawal larger than the balance                             |
-| `BALANCE_LIMIT_EXCEEDED` | 422    | Deposit would exceed the largest exactly representable balance |
-| `RATE_LIMITED`           | 429    | Too many failed logins; `details.retryAfterSeconds`            |
-| `INTERNAL_ERROR`         | 500    | Unexpected error; details are logged, not returned             |
+| Error code                      | Status | Meaning                                                        |
+| ------------------------------- | ------ | -------------------------------------------------------------- |
+| `VALIDATION_ERROR`              | 400    | Invalid input; `details` lists `{ path, message }` per field   |
+| `INVALID_JSON`                  | 400    | The request body is not valid JSON                             |
+| `INVALID_CREDENTIALS`           | 401    | Login failed (unknown email or wrong password)                 |
+| `UNAUTHENTICATED`               | 401    | Missing, invalid or expired session                            |
+| `ACCOUNT_NOT_FOUND`             | 404    | No such account, or it belongs to another customer             |
+| `IDEMPOTENCY_CONFLICT`          | 409    | `Idempotency-Key` already used for a different request         |
+| `NOT_FOUND`                     | 404    | Unknown route                                                  |
+| `PAYLOAD_TOO_LARGE`             | 413    | Request body over 10kb                                         |
+| `INSUFFICIENT_FUNDS`            | 422    | Withdrawal or transfer larger than the balance                 |
+| `SAME_ACCOUNT_TRANSFER`         | 422    | Transfer source and destination are the same account           |
+| `DESTINATION_ACCOUNT_NOT_FOUND` | 422    | Transfer destination does not exist                            |
+| `BALANCE_LIMIT_EXCEEDED`        | 422    | Deposit would exceed the largest exactly representable balance |
+| `RATE_LIMITED`                  | 429    | Too many failed logins; `details.retryAfterSeconds`            |
+| `INTERNAL_ERROR`                | 500    | Unexpected error; details are logged, not returned             |
 
 ## Authentication
 
@@ -349,6 +358,55 @@ Idempotency-Key: 6f1c2a4e-8d0b-4f7a-9c3e-2b5d7a9e1f40
 Limitations: there are no descriptions, fees, holds or daily limits; and only successful requests
 are remembered for idempotency, so a retry of a refused request is evaluated afresh.
 
+## Transfers
+
+```http
+POST /api/v1/accounts/00000000-0000-4000-8000-000000000101/transfers
+Content-Type: application/json
+Idempotency-Key: 0b8f6c3e-2a51-4c1e-9d7a-5f3e8b2c4a10
+
+{ "destinationAccountId": "00000000-0000-4000-8000-000000000103", "amount": 2500 }
+```
+
+The account in the path is the source and must belong to the caller. The destination can be any
+account, including another customer's.
+
+- **Validation.** `amount` follows the same rules as deposits (integer cents, 1 to `100000000`).
+  `destinationAccountId` must be a UUID, and no other fields are accepted. Account ids are
+  normalised to lower case, so two spellings of one id are treated as the same account.
+- **Errors.** Someone else's or an unknown source returns `404 ACCOUNT_NOT_FOUND`, as elsewhere.
+  An unknown destination returns `422 DESTINATION_ACCOUNT_NOT_FOUND`, a transfer to the source
+  itself `422 SAME_ACCOUNT_TRANSFER`, and too little money `422 INSUFFICIENT_FUNDS`. None of them
+  change anything.
+- **Privacy.** The response contains the transfer and the source account. `destinationAccount` is
+  included only when the caller owns it, and is `null` for another customer's account, whose
+  balance, account number and owner are never returned.
+- **Atomicity.** One database transaction locks both accounts, checks ownership, existence and
+  funds, updates both balances, and inserts one `transfer` transaction with two ledger entries: a
+  debit on the source and a credit on the destination, each with its `balance_after`. Any failure
+  rolls back all of it, including the idempotency key.
+- **Deadlock prevention.** Both rows are locked with `SELECT ... FOR UPDATE` in ascending account-id
+  order, not source-then-destination. If transfers locked the source first, A→B and B→A running
+  together could each hold one row while waiting for the other. With a single global order every
+  transaction waits in the same direction, so no cycle can form. The tests run 60 interleaved
+  A→B/B→A transfers and an A→B→C→A cycle; switching the code to source-first ordering makes the
+  A→B/B→A test fail.
+- **Concurrency.** Transfers sharing an account run one at a time; unrelated accounts never wait
+  for each other. A source can never be overdrawn, however many transfers compete for it.
+- **Idempotency.** The same mechanism as deposits and withdrawals: one key per customer, stored on
+  the transaction. The same key with the same source, destination and amount replays the original
+  transfer; any difference (including a key first used for a deposit or withdrawal) returns
+  `409 IDEMPOTENCY_CONFLICT`. Simultaneous duplicates produce exactly one transfer.
+
+Assumptions and limitations:
+
+- Recipients are addressed by account ID, as the API specifies. A production system would address
+  them by account number and show the recipient's name for confirmation before sending.
+- Because the destination may belong to anyone, the API necessarily reveals whether a given account
+  ID exists. Account IDs are random UUIDs and cannot practically be guessed.
+- Single currency (USD), enforced by the schema. There are no transfer limits beyond the
+  per-operation maximum, no scheduled or pending transfers, and no reversals.
+
 ## Scripts
 
 Run from `banking-app/`; each delegates to the backend and frontend packages.
@@ -363,6 +421,12 @@ Run from `banking-app/`; each delegates to the backend and frontend packages.
 | `npm test`             | Run the backend test suite (needs the test database) |
 | `npm run format`       | Format the repository with Prettier                  |
 | `npm run format:check` | Check formatting without writing                     |
+
+To run one area of the test suite, for example the transfer tests, from `backend/`:
+
+```bash
+npx vitest run tests/integration/transfers
+```
 
 ## Design notes
 
