@@ -14,6 +14,10 @@ export default defineConfig({
       LOG_LEVEL: "silent",
       // Test-only signing key; never used outside the test run.
       SESSION_SECRET: "test-only-session-secret-0123456789abcdef",
+      // The suite deliberately fires bursts of money movements (concurrency and
+      // idempotency tests) far beyond what a person does. The limiter itself is
+      // tested with an explicit small limit (tests/integration/security).
+      MONEY_RATE_LIMIT_PER_MINUTE: "10000",
     },
   },
 });

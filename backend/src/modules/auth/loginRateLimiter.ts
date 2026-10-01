@@ -1,6 +1,6 @@
 import type { RequestHandler } from "express";
 import { rateLimit } from "express-rate-limit";
-import { RateLimitedError } from "../../errors/AppError.js";
+import { rateLimitedError } from "../../middleware/rateLimitResponse.js";
 import type { LoginInput } from "./auth.schemas.js";
 
 export const LOGIN_MAX_FAILED_ATTEMPTS = 5;
@@ -30,10 +30,6 @@ export function createLoginRateLimiter(): RequestHandler {
     legacyHeaders: false,
     // The key is not an IP address, so the IP/proxy sanity checks don't apply.
     validate: { xForwardedForHeader: false, trustProxy: false },
-    handler: (req, _res, next) => {
-      const resetTime = (req as { rateLimit?: { resetTime?: Date } }).rateLimit?.resetTime;
-      const retryAfterMs = resetTime ? resetTime.getTime() - Date.now() : LOGIN_WINDOW_MS;
-      next(new RateLimitedError(Math.max(1, Math.ceil(retryAfterMs / 1000))));
-    },
+    handler: (req, _res, next) => next(rateLimitedError(req, LOGIN_WINDOW_MS)),
   });
 }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import type { Logger } from "pino";
 import { pinoHttp } from "pino-http";
+import { serializeError } from "../config/logger.js";
 
 const REQUEST_ID_HEADER = "x-request-id";
 
@@ -41,6 +42,7 @@ export function createRequestLogger(logger: Logger): RequestHandler {
         path: pathOnly(req.url),
       }),
       res: (res: { statusCode: number }) => ({ statusCode: res.statusCode }),
+      err: serializeError,
     },
     // Set by requireAuth; identifies who made the request without logging credentials.
     customProps: (req) => ({ customerId: (req as Request).auth?.customerId }),

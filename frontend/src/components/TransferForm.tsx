@@ -43,6 +43,11 @@ function describeError(err: unknown, source: Account): { fields: FieldErrors; fo
       return { fields: {}, form: "The destination account can't receive this amount." };
     case "ACCOUNT_NOT_FOUND":
       return { fields: {}, form: "This account is no longer available." };
+    case "RATE_LIMITED":
+      return {
+        fields: {},
+        form: "Too many requests in a short time. Please wait a minute and try again.",
+      };
     case "IDEMPOTENCY_CONFLICT":
       return { fields: {}, form: "This request clashed with an earlier one. Please try again." };
     case "VALIDATION_ERROR": {
@@ -167,7 +172,7 @@ export function TransferForm({
         account using its account ID.
       </p>
 
-      <form onSubmit={handleSubmit} noValidate className="mt-4 space-y-4">
+      <form method="post" onSubmit={handleSubmit} noValidate className="mt-4 space-y-4">
         <div>
           <label htmlFor="destination" className="block text-sm font-medium text-slate-700">
             Destination account

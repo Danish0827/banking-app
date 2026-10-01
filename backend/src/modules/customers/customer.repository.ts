@@ -18,6 +18,11 @@ export async function findCustomerByEmailForLogin(
   return rows[0] ?? null;
 }
 
+export async function customerExists(db: Queryable, id: string): Promise<boolean> {
+  const { rowCount } = await db.query("SELECT 1 FROM customers WHERE id = $1", [id]);
+  return rowCount === 1;
+}
+
 export async function findCustomerById(db: Queryable, id: string): Promise<Customer | null> {
   const { rows } = await db.query<Customer>(
     `SELECT id, email, full_name AS "fullName"

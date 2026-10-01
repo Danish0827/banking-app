@@ -90,6 +90,25 @@ export class IdempotencyConflictError extends AppError {
   }
 }
 
+/** A browser request from an origin that is neither the app's own nor configured as trusted. */
+export class OriginNotAllowedError extends AppError {
+  constructor() {
+    super(403, "ORIGIN_NOT_ALLOWED", "Cross-origin requests from this origin are not allowed");
+  }
+}
+
+export class MethodNotAllowedError extends AppError {
+  constructor() {
+    super(405, "METHOD_NOT_ALLOWED", "This method is not allowed for this endpoint");
+  }
+}
+
+export class UnsupportedMediaTypeError extends AppError {
+  constructor(message = "Request body must be JSON (Content-Type: application/json)") {
+    super(415, "UNSUPPORTED_MEDIA_TYPE", message);
+  }
+}
+
 export class RateLimitedError extends AppError {
   constructor(retryAfterSeconds: number) {
     super(429, "RATE_LIMITED", "Too many attempts. Please try again later.", {

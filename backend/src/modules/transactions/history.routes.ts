@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { GET_ONLY, methodNotAllowed } from "../../middleware/methodNotAllowed.js";
 import { requireAuth } from "../../middleware/requireAuth.js";
 import { listTransactions } from "./history.controller.js";
 
@@ -7,7 +8,7 @@ export function createTransactionHistoryRouter(): Router {
   const router = Router();
 
   router.use(requireAuth);
-  router.get("/", listTransactions);
+  router.route("/").get(listTransactions).all(methodNotAllowed(GET_ONLY));
 
   return router;
 }

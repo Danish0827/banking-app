@@ -29,6 +29,8 @@ function errorMessage(err: unknown, type: MovementType, account: Account): strin
       return "This deposit would take the account over its maximum balance.";
     case "ACCOUNT_NOT_FOUND":
       return "This account is no longer available.";
+    case "RATE_LIMITED":
+      return "Too many requests in a short time. Please wait a minute and try again.";
     case "IDEMPOTENCY_CONFLICT":
       return "This request clashed with an earlier one. Please try again.";
     default:
@@ -133,7 +135,7 @@ export function MoneyMovementForm({
         ))}
       </div>
 
-      <form onSubmit={handleSubmit} noValidate className="mt-4">
+      <form method="post" onSubmit={handleSubmit} noValidate className="mt-4">
         <label htmlFor="amount" className="block text-sm font-medium text-slate-700">
           Amount ({account.currency})
         </label>

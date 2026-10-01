@@ -94,7 +94,9 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="space-y-4">
+    // method="post": if JavaScript ever fails to load, a native submit must not
+    // put the password in the URL (and so in history and server logs).
+    <form method="post" onSubmit={handleSubmit} noValidate className="space-y-4">
       {formError && (
         <p
           role="alert"

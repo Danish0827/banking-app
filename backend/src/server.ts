@@ -6,13 +6,21 @@ import { checkDatabaseConnection, pool } from "./db/pool.js";
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
+// Bound how long a client may take to send a request, so slow or stalled
+// connections cannot hold server resources indefinitely.
+const HEADERS_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+
 async function start(): Promise<Server> {
   // Fail fast: don't accept traffic if the database is unreachable.
   await checkDatabaseConnection();
 
-  return createApp().listen(env.PORT, () => {
+  const server = createApp().listen(env.PORT, () => {
     logger.info({ port: env.PORT, env: env.NODE_ENV }, "API server listening");
   });
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  return server;
 }
 
 function registerShutdown(server: Server): void {

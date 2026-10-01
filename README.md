@@ -133,16 +133,18 @@ only as bcrypt hashes, and each opening balance is recorded as a deposit in the 
 
 ### Backend (`backend/.env`)
 
-| Variable              | Default       | Description                                                      |
-| --------------------- | ------------- | ---------------------------------------------------------------- |
-| `NODE_ENV`            | `development` | `development`, `test` or `production`                            |
-| `PORT`                | `4000`        | Port the API listens on                                          |
-| `LOG_LEVEL`           | `info`        | Pino log level                                                   |
-| `DATABASE_URL`        | _(required)_  | Development/production PostgreSQL connection string              |
-| `TEST_DATABASE_URL`   | _(tests)_     | Test database; required for `npm test`, name must end in `_test` |
-| `DB_POOL_MAX`         | `10`          | Maximum connections in the pool                                  |
-| `SESSION_SECRET`      | _(required)_  | Key that signs session tokens; at least 32 characters            |
-| `SESSION_TTL_MINUTES` | `60`          | How long a login session lasts                                   |
+| Variable                      | Default       | Description                                                      |
+| ----------------------------- | ------------- | ---------------------------------------------------------------- |
+| `NODE_ENV`                    | `development` | `development`, `test` or `production`                            |
+| `PORT`                        | `4000`        | Port the API listens on                                          |
+| `LOG_LEVEL`                   | `info`        | Pino log level                                                   |
+| `DATABASE_URL`                | _(required)_  | Development/production PostgreSQL connection string              |
+| `TEST_DATABASE_URL`           | _(tests)_     | Test database; required for `npm test`, name must end in `_test` |
+| `DB_POOL_MAX`                 | `10`          | Maximum connections in the pool                                  |
+| `SESSION_SECRET`              | _(required)_  | Key that signs session tokens; at least 32 characters            |
+| `SESSION_TTL_MINUTES`         | `60`          | How long a login session lasts                                   |
+| `CORS_ALLOWED_ORIGINS`        | _(empty)_     | Extra browser origins allowed to call the API with credentials   |
+| `MONEY_RATE_LIMIT_PER_MINUTE` | `30`          | Deposits, withdrawals and transfers per customer per minute      |
 
 The environment is validated at startup; the process exits with a clear message if a variable is
 missing or malformed.
@@ -257,22 +259,26 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
   `amount` and `balanceAfter` in cents. For a transfer it has `sourceAccountId` and
   `destinationAccountId` instead of `accountId`, and `balanceAfter` is the source's balance.
 
-| Error code                      | Status | Meaning                                                        |
-| ------------------------------- | ------ | -------------------------------------------------------------- |
-| `VALIDATION_ERROR`              | 400    | Invalid input; `details` lists `{ path, message }` per field   |
-| `INVALID_JSON`                  | 400    | The request body is not valid JSON                             |
-| `INVALID_CREDENTIALS`           | 401    | Login failed (unknown email or wrong password)                 |
-| `UNAUTHENTICATED`               | 401    | Missing, invalid or expired session                            |
-| `ACCOUNT_NOT_FOUND`             | 404    | No such account, or it belongs to another customer             |
-| `IDEMPOTENCY_CONFLICT`          | 409    | `Idempotency-Key` already used for a different request         |
-| `NOT_FOUND`                     | 404    | Unknown route                                                  |
-| `PAYLOAD_TOO_LARGE`             | 413    | Request body over 10kb                                         |
-| `INSUFFICIENT_FUNDS`            | 422    | Withdrawal or transfer larger than the balance                 |
-| `SAME_ACCOUNT_TRANSFER`         | 422    | Transfer source and destination are the same account           |
-| `DESTINATION_ACCOUNT_NOT_FOUND` | 422    | Transfer destination does not exist                            |
-| `BALANCE_LIMIT_EXCEEDED`        | 422    | Deposit would exceed the largest exactly representable balance |
-| `RATE_LIMITED`                  | 429    | Too many failed logins; `details.retryAfterSeconds`            |
-| `INTERNAL_ERROR`                | 500    | Unexpected error; details are logged, not returned             |
+| Error code                      | Status | Meaning                                                                |
+| ------------------------------- | ------ | ---------------------------------------------------------------------- |
+| `VALIDATION_ERROR`              | 400    | Invalid input; `details` lists `{ path, message }` per field           |
+| `INVALID_JSON`                  | 400    | The request body is not valid JSON                                     |
+| `BAD_REQUEST`                   | 400    | Malformed request, e.g. an invalid `%`-escape in the URL               |
+| `INVALID_CREDENTIALS`           | 401    | Login failed (unknown email or wrong password)                         |
+| `UNAUTHENTICATED`               | 401    | Missing, invalid or expired session                                    |
+| `ORIGIN_NOT_ALLOWED`            | 403    | Cross-origin write or preflight from an untrusted origin               |
+| `ACCOUNT_NOT_FOUND`             | 404    | No such account, or it belongs to another customer                     |
+| `NOT_FOUND`                     | 404    | Unknown route                                                          |
+| `METHOD_NOT_ALLOWED`            | 405    | Wrong HTTP method for the endpoint; see the `Allow` header             |
+| `IDEMPOTENCY_CONFLICT`          | 409    | `Idempotency-Key` already used for a different request                 |
+| `PAYLOAD_TOO_LARGE`             | 413    | Request body over 10kb                                                 |
+| `UNSUPPORTED_MEDIA_TYPE`        | 415    | Body that is not UTF-8 JSON                                            |
+| `INSUFFICIENT_FUNDS`            | 422    | Withdrawal or transfer larger than the balance                         |
+| `SAME_ACCOUNT_TRANSFER`         | 422    | Transfer source and destination are the same account                   |
+| `DESTINATION_ACCOUNT_NOT_FOUND` | 422    | Transfer destination does not exist                                    |
+| `BALANCE_LIMIT_EXCEEDED`        | 422    | Deposit would exceed the largest exactly representable balance         |
+| `RATE_LIMITED`                  | 429    | Too many failed logins or money movements; `details.retryAfterSeconds` |
+| `INTERNAL_ERROR`                | 500    | Unexpected error; details are logged, not returned                     |
 
 ## Authentication
 
@@ -282,8 +288,9 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 - **Session** is a JWT (HS256) holding only the customer id and expiry, stored in a cookie that is
   `HttpOnly` (unreadable from JavaScript), `SameSite=Lax` (not sent on cross-site POSTs) and
   `Secure` in production. It expires after `SESSION_TTL_MINUTES`.
-- **`requireAuth`** verifies the cookie and exposes the caller as `req.auth` (`AuthContext`), which
-  services use for ownership checks. Anything else gets `401 UNAUTHENTICATED`.
+- **`requireAuth`** verifies the cookie, checks the customer still exists, and exposes the caller as
+  `req.auth` (`AuthContext`), which services use for ownership checks. Anything else gets
+  `401 UNAUTHENTICATED`.
 - **Logout** clears the cookie. Sessions are stateless, so a copied token stays valid until it
   expires; see "Production improvements" for server-side revocation.
 - **Rate limiting** allows 5 failed logins per account (email) per 15 minutes. It is keyed on the
@@ -474,6 +481,83 @@ everything the app shows, and the deposit, withdrawal and transfer responses ret
 transaction when it is created, so a second endpoint would only add another surface that needs the
 same ownership checks.
 
+## Security
+
+A summary of the controls in place. Each one is covered by tests in
+`backend/tests/integration/security` and the module tests.
+
+**Authentication and session.** Passwords are bcrypt-hashed (cost 12). A login failure gives the
+same answer and timing for an unknown email and a wrong password. The session is an HS256 JWT,
+pinned to that algorithm, with a required issuer, subject and expiry, signed with
+`SESSION_SECRET` (at least 32 characters, no default, placeholder refused in production). The
+customer it names must still exist on every request. The cookie is `HttpOnly`, `SameSite=Lax`,
+`Path=/`, and `Secure` in production; the web app never sees or stores the token.
+
+**Authorization.** The customer always comes from the verified session, never from a URL, query
+or body. Account ownership is a condition in every SQL query, so another customer's account looks
+exactly like a non-existent one (`404`), and history is restricted to the caller's accounts in
+SQL. Request bodies are strict (unknown fields such as `customerId` are rejected), ids must be
+UUIDs, amounts are bounded integers, and history accepts only its documented query parameters,
+each at most once.
+
+**Money safety.** Every money movement is one database transaction with row locks taken in a fixed
+order, database constraints that forbid negative balances, an append-only ledger, and
+idempotency keys backed by a unique constraint (see the sections above).
+
+**Cross-site requests and CORS.** The web app reaches the API through its own `/api` proxy, so no
+CORS is needed and none is granted by default. `CORS_ALLOWED_ORIGINS` can list exact extra
+origins: they get credentialed CORS with their origin echoed back (never `*`; wildcards are
+refused at startup). Preflights from other origins get `403`. Any state-changing request whose
+`Origin` is neither trusted nor the request's own site (through the proxy's `X-Forwarded-Host`)
+is refused with `403 ORIGIN_NOT_ALLOWED` before it reaches a handler. This is CSRF protection on
+top of `SameSite=Lax`, which still treats other ports and subdomains as the same site. Bodies must
+be JSON (`415` otherwise), so a plain HTML form cannot submit to the API.
+
+**Rate limiting.** 5 failed logins per email per 15 minutes. `MONEY_RATE_LIMIT_PER_MINUTE`
+(default 30) money movements per customer per minute, shared by deposits, withdrawals and
+transfers, counting rejected attempts too. That is far above what a person does in the app, but
+stops a script from draining an account in many small transfers. Limits are keyed on the email or
+customer, not the IP, because all browser traffic arrives from the proxy's address. Reads are not
+limited.
+
+**Request limits.** JSON bodies up to 10 kB (`413` beyond). Unsupported methods get
+`405 METHOD_NOT_ALLOWED` with an `Allow` header. The server limits headers to 15 s and whole
+requests to 30 s, and the database limits statements and idle transactions to 10 s.
+
+**Headers.** The API sends `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`,
+`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a
+restrictive `Permissions-Policy`, `Cache-Control: no-store`, and HSTS in production only. The web
+app's pages send a CSP that forbids framing (clickjacking), plugins and other script origins, plus
+the same frame, sniffing, referrer and permissions headers, HSTS in production, and no
+`X-Powered-By`. Their CSP allows inline scripts and styles because Next.js emits them; removing
+that would require nonce-based rendering of every page.
+
+**Errors.** Clients receive only `{ code, message, details?, requestId }`. Unexpected failures
+become a generic `500 INTERNAL_ERROR` in every environment, with no stack trace, SQL, database
+detail or file path. Malformed input from parsers or the router is a `4xx`, never a `500`, and
+unknown routes are not echoed back.
+
+**Logging.** One line per request: method, path without query string, status, duration, request
+id and customer id. Never headers, cookies, tokens, bodies, amounts, balances, account numbers or
+idempotency keys. Error logs drop the row data PostgreSQL attaches to errors (`detail`, `where`,
+`hint`). A client-supplied `X-Request-Id` is reused only if it is a short plain token, so it
+cannot inject log lines or headers.
+
+**Known limitations.**
+
+- Logout clears the cookie, but sessions are stateless JWTs: a copied token remains valid until it
+  expires (60 minutes by default). Revocation would need a server-side session store.
+- Rate-limit counters are in memory, per instance, and reset on restart.
+- Login limiting is per email, so one password tried across many emails is not limited, and
+  someone can briefly lock a known email out.
+- The web app's CSP allows inline scripts.
+
+**Production recommendations.** Serve everything over HTTPS (HSTS and `Secure` cookies are turned
+on by `NODE_ENV=production`); set a unique random `SESSION_SECRET` from a secrets manager; keep
+the API reachable only through the web app's proxy or a gateway; add per-IP rate limiting at the
+edge with a shared store (e.g. Redis); run the database with least-privilege credentials and TLS;
+and forward logs to a central store with retention limits.
+
 ## Scripts
 
 Run from `banking-app/`; each delegates to the backend and frontend packages.
@@ -494,6 +578,7 @@ To run one area of the test suite, for example the transfer tests, from `backend
 ```bash
 npx vitest run tests/integration/transfers
 npx vitest run tests/integration/history
+npx vitest run tests/integration/security
 ```
 
 ## Design notes

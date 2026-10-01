@@ -4,6 +4,41 @@ import { databaseNameFromUrl, isTestDatabaseName } from "./databaseName.js";
 
 const postgresUrl = z.url({ protocol: /^postgres(ql)?$/ });
 
+/**
+ * A comma-separated list of exact origins ("https://app.example.com"), or
+ * empty. Wildcards and anything with a path are rejected: credentials are
+ * allowed for these origins, so each must be spelled out.
+ */
+const originList = z
+  .string()
+  .default("")
+  .transform((value, ctx) => {
+    const origins = value
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean);
+    for (const origin of origins) {
+      let parsed: URL | undefined;
+      try {
+        parsed = new URL(origin);
+      } catch {
+        parsed = undefined;
+      }
+      if (
+        !parsed ||
+        parsed.origin !== origin ||
+        !/^https?:$/.test(parsed.protocol) ||
+        origin.includes("*")
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: `"${origin}" is not an exact origin such as https://app.example.com`,
+        });
+      }
+    }
+    return origins;
+  });
+
 /** The value shipped in .env.example. Fine for local use, refused in production. */
 const EXAMPLE_SESSION_SECRET = "local-development-only-secret-change-me";
 
@@ -27,6 +62,11 @@ const envSchema = z
       .min(1)
       .max(24 * 60)
       .default(60),
+    // Origins outside the app's own that may call the API from a browser.
+    // Empty by default: the web app reaches the API through its same-origin proxy.
+    CORS_ALLOWED_ORIGINS: originList,
+    // Deposits, withdrawals and transfers allowed per customer per minute.
+    MONEY_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(30),
   })
   .superRefine((value, ctx) => {
     if (value.NODE_ENV === "production" && value.SESSION_SECRET === EXAMPLE_SESSION_SECRET) {
@@ -74,6 +114,8 @@ export interface Env {
   DB_POOL_MAX: number;
   SESSION_SECRET: string;
   SESSION_TTL_SECONDS: number;
+  CORS_ALLOWED_ORIGINS: string[];
+  MONEY_RATE_LIMIT_PER_MINUTE: number;
 }
 
 function loadEnv(): Env {
@@ -96,6 +138,8 @@ function loadEnv(): Env {
     DB_POOL_MAX: parsed.data.DB_POOL_MAX,
     SESSION_SECRET: parsed.data.SESSION_SECRET,
     SESSION_TTL_SECONDS: parsed.data.SESSION_TTL_MINUTES * 60,
+    CORS_ALLOWED_ORIGINS: parsed.data.CORS_ALLOWED_ORIGINS,
+    MONEY_RATE_LIMIT_PER_MINUTE: parsed.data.MONEY_RATE_LIMIT_PER_MINUTE,
   };
 }
 
