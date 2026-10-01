@@ -3,8 +3,8 @@
 A simple banking web application: view accounts, deposit, withdraw, transfer between customers
 and browse transaction history.
 
-> **Status:** customers can sign in, view their own accounts, deposit, withdraw, and transfer
-> money to any account. Transaction history is added in a later milestone.
+> **Status:** customers can sign in, view their own accounts, deposit, withdraw, transfer money
+> to any account, and browse their transaction history.
 
 ## Tech stack
 
@@ -107,7 +107,8 @@ Run these from the `banking-app/` directory.
    ```
 
 Open http://localhost:3000 and sign in with one of the demo customers below. The dashboard lists
-that customer's accounts; select one to see its details.
+that customer's accounts; select one to see its details and move money. **Transactions** in the
+header shows the customer's history.
 
 ### Demo data
 
@@ -247,6 +248,7 @@ Base path: `/api/v1`. Successful responses are wrapped as `{ "data": ... }` and 
 | POST   | `/accounts/:accountId/deposits`    | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                       |
 | POST   | `/accounts/:accountId/withdrawals` | session + `Idempotency-Key` | `{ amount }`                       | `201 { "data": { "transaction", "account" } }`                       |
 | POST   | `/accounts/:accountId/transfers`   | session + `Idempotency-Key` | `{ destinationAccountId, amount }` | `201 { "data": { "transaction", "account", "destinationAccount" } }` |
+| GET    | `/transactions`                    | session                     | none (query parameters)            | `200 { "data": { "transactions": [item], "nextCursor" } }`           |
 
 - `customer` is `{ id, email, fullName }`.
 - `account` is `{ id, accountNumber, type, currency, balance, createdAt }`. `type` is `checking` or
@@ -407,6 +409,71 @@ Assumptions and limitations:
 - Single currency (USD), enforced by the schema. There are no transfer limits beyond the
   per-operation maximum, no scheduled or pending transfers, and no reversals.
 
+## Transaction history
+
+```http
+GET /api/v1/transactions?limit=20&type=transfer&accountId=<uuid>&from=2026-10-01&to=2026-11-01
+```
+
+Each history item describes how one transaction affected one of the caller's accounts. It is one
+row of `ledger_entries` joined to its `transactions` row. Nothing new is stored.
+
+```json
+{
+  "transactionId": "…",
+  "type": "transfer",
+  "direction": "debit",
+  "amount": 1000,
+  "currency": "USD",
+  "accountId": "<the caller's account>",
+  "balanceAfter": 6500,
+  "counterparty": { "accountId": "<destination>", "ownedByYou": false },
+  "createdAt": "2026-10-01T09:30:00.000Z"
+}
+```
+
+- **`direction`** is `credit` (money in) or `debit` (money out) for `accountId`. `amount` is always
+  positive integer cents, and `balanceAfter` is that account's balance right after the transaction.
+- **Transfers between the caller's own accounts** appear twice, once on each account, as on a bank
+  statement. The two items share a `transactionId`; `transactionId` + `accountId` is unique.
+- **`counterparty`** is set for transfers only. Its `accountId` is shown when the caller owns that
+  account or sent the transfer to it (so already knows it). It is `null` for money received from
+  another customer. No other customer's name, account number, balance or owner is ever returned.
+
+**Query parameters.** All are optional, and any other parameter (`customerId`, sort fields, …) is
+rejected with `400`.
+
+| Parameter   | Meaning                                                                   |
+| ----------- | ------------------------------------------------------------------------- |
+| `limit`     | Page size, 1–100, default 20                                              |
+| `cursor`    | `nextCursor` from the previous page                                       |
+| `type`      | `deposit`, `withdrawal` or `transfer`                                     |
+| `accountId` | One of the caller's accounts; anyone else's simply matches nothing        |
+| `from`      | Inclusive start: ISO 8601 date-time with offset, or a date (midnight UTC) |
+| `to`        | Exclusive end, same format; must be later than `from`                     |
+
+**Ownership.** The query joins each ledger entry to its account and requires
+`accounts.customer_id` to be the caller (taken from the session). Filters can only narrow that
+set, so no filter, cursor or id can reach another customer's entries.
+
+**Pagination** is keyset (cursor) based on the ledger entry id, newest first. A page is
+`ORDER BY id DESC LIMIT limit + 1`; the extra row only tells whether `nextCursor` should be set, so
+no `COUNT` and no full scan are needed. Unlike page numbers, a cursor never skips or repeats
+entries when new transactions arrive while paging. The trade-off is no "jump to page N" and no
+total count. The web app pages with "Load more".
+
+**Indexes.** No migration was needed. The query uses `accounts_customer_id_idx` to find the
+caller's accounts, then `ledger_entries (account_id, id DESC)` (created with the schema for this
+purpose) for each account, with the cursor applied inside the index scan, and primary keys for the
+rest; `EXPLAIN` confirms it. For a customer with very many entries across several accounts, the
+final sort covers that customer's own entries below the cursor. At much larger volumes, a
+customer column on `ledger_entries` with its own index would remove that sort.
+
+**Detail endpoint.** There is no `GET /transactions/:id`. Each list item already carries
+everything the app shows, and the deposit, withdrawal and transfer responses return the full
+transaction when it is created, so a second endpoint would only add another surface that needs the
+same ownership checks.
+
 ## Scripts
 
 Run from `banking-app/`; each delegates to the backend and frontend packages.
@@ -426,6 +493,7 @@ To run one area of the test suite, for example the transfer tests, from `backend
 
 ```bash
 npx vitest run tests/integration/transfers
+npx vitest run tests/integration/history
 ```
 
 ## Design notes

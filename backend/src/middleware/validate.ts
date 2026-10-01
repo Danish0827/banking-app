@@ -45,3 +45,16 @@ export function validateParams(schema: z.ZodType<Record<string, string>>): Reque
     next();
   };
 }
+
+/**
+ * Parses a value (typically `req.query`, which Express 5 does not allow to be
+ * replaced) and returns the typed result, or throws a 400 listing each
+ * invalid field.
+ */
+export function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown): T {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw toValidationError(result.error);
+  }
+  return result.data;
+}

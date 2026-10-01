@@ -2,6 +2,7 @@ import { Router } from "express";
 import { createAccountRouter } from "../modules/accounts/account.routes.js";
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
 import { healthRouter } from "../modules/health/health.routes.js";
+import { createTransactionHistoryRouter } from "../modules/transactions/history.routes.js";
 import { createAccountTransactionRouter } from "../modules/transactions/transaction.routes.js";
 
 export function createV1Router(): Router {
@@ -11,6 +12,7 @@ export function createV1Router(): Router {
   router.use("/auth", createAuthRouter());
   router.use("/accounts", createAccountRouter());
   router.use("/accounts/:accountId", createAccountTransactionRouter());
+  router.use("/transactions", createTransactionHistoryRouter());
 
   return router;
 }

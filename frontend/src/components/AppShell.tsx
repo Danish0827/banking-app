@@ -69,9 +69,19 @@ export function AppShell({ children }: { children: ReactNode }) {
     <>
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-6 py-4">
-          <Link href="/" className="text-lg font-semibold tracking-tight">
-            Banking App
-          </Link>
+          <div className="flex items-center gap-6">
+            <Link href="/" className="text-lg font-semibold tracking-tight">
+              Banking App
+            </Link>
+            <nav aria-label="Main" className="flex gap-4 text-sm font-medium text-slate-600">
+              <Link href="/" className="hover:text-slate-900">
+                Accounts
+              </Link>
+              <Link href="/transactions" className="hover:text-slate-900">
+                Transactions
+              </Link>
+            </nav>
+          </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-slate-600" title={customer.email}>
               {customer.fullName}

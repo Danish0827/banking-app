@@ -51,9 +51,14 @@ export function AccountDetail({ accountId }: { accountId: string }) {
 
   return (
     <div>
-      <Link href="/" className={BACK_LINK_CLASSES}>
-        ← Back to accounts
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link href="/" className={BACK_LINK_CLASSES}>
+          ← Back to accounts
+        </Link>
+        <Link href={`/transactions?accountId=${data.id}`} className={BACK_LINK_CLASSES}>
+          View transactions →
+        </Link>
+      </div>
 
       <section className="mt-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-xl font-semibold tracking-tight">
